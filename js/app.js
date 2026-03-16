@@ -3391,6 +3391,93 @@ function prepareGraphData(data, type) {
 
   return { labels, reps, weights, tooltips };
 }
+// ===== Water Intake Tracker =====
+const WATER_KEY = 'waterTrackerData';
+const WATER_MAX = 8;
+const WATER_ARC_RADIUS = 90; // SVG radius matching the path's 'A 90 90' arc
+const WATER_ARC_LENGTH = Math.PI * WATER_ARC_RADIUS; // semi-circle arc length ≈ 282.74
+
+function getWaterData() {
+  const today = new Date().toISOString().split('T')[0];
+  const raw = localStorage.getItem(WATER_KEY);
+  if (raw) {
+    const data = JSON.parse(raw);
+    if (data.date === today) {
+      return data;
+    }
+  }
+  const fresh = { date: today, count: 0 };
+  localStorage.setItem(WATER_KEY, JSON.stringify(fresh));
+  return fresh;
+}
+
+function saveWaterData(data) {
+  localStorage.setItem(WATER_KEY, JSON.stringify(data));
+}
+
+function updateWaterMeter() {
+  const data = getWaterData();
+  const count = Math.min(data.count, WATER_MAX);
+  const filled = WATER_ARC_LENGTH * count / WATER_MAX;
+  const empty = WATER_ARC_LENGTH - filled;
+
+  const fillPath = document.getElementById('water-meter-fill');
+  if (fillPath) {
+    fillPath.setAttribute('stroke-dasharray', `${filled.toFixed(2)} ${empty.toFixed(2)}`);
+  }
+
+  const label = document.getElementById('water-count-label');
+  if (label) {
+    label.textContent = `${count}/${WATER_MAX}`;
+  }
+
+  const modalCount = document.getElementById('water-modal-count');
+  if (modalCount) {
+    modalCount.textContent = `${count} / ${WATER_MAX}`;
+  }
+}
+
+function logWaterIntake() {
+  const data = getWaterData();
+  if (data.count < WATER_MAX) {
+    data.count += 1;
+    saveWaterData(data);
+  }
+  updateWaterMeter();
+}
+
+function removeWaterIntake() {
+  const data = getWaterData();
+  if (data.count > 0) {
+    data.count -= 1;
+    saveWaterData(data);
+  }
+  updateWaterMeter();
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  updateWaterMeter();
+
+  // Both drop buttons open the water log modal
+  document.getElementById('water-drop-empty')?.addEventListener('click', () => showModal('water-modal'));
+  document.getElementById('water-drop-full')?.addEventListener('click', () => showModal('water-modal'));
+
+  // Modal action buttons
+  document.getElementById('water-log-btn')?.addEventListener('click', logWaterIntake);
+  document.getElementById('water-remove-btn')?.addEventListener('click', removeWaterIntake);
+
+  // Close button
+  document.getElementById('water-modal-close')?.addEventListener('click', () => hideModal('water-modal'));
+
+  // Close on overlay click
+  document.getElementById('water-modal')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('water-modal')) {
+      hideModal('water-modal');
+    }
+  });
+});
+// ===== End Water Intake Tracker =====
+
 // --- About Modal Logic ---
 document.addEventListener('DOMContentLoaded', () => {
   const appTitle = document.getElementById('app-title');
