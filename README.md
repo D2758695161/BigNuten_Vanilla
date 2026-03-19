@@ -1,7 +1,7 @@
 # ⚕︎ BigNuten ⚕︎
 ### (Another Decent Frankenstein)
 
-> A privacy-first, open-source fitness tracker that logs weight, supplements, raw food intake, and exercise — with IPFS-backed data persistence and Web3 wallet integration.
+> An open-source fitness tracker that logs weight, supplements, raw food intake, and exercise — with IPFS-backed data persistence and Web3 wallet integration.
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -21,10 +21,7 @@ BigNuten v1.0.0 is minting **100 Early Supporter DNFTs** on Optimism as ERC-1155
 ### What You Get
 
 - 🏅 **Permanent on-chain proof** of founding support — your name in history
-- 🔓 **Lifetime access** to all premium BigNuten features, current and future
 - 🗳️ **Governance voting rights** on product roadmap, features, and integrations
-- 🎨 **Exclusive DNFT holder UI skin & badge** in the app
-- 📣 **Optional hall-of-fame listing** in the contributors section
 - 🤝 **Direct line to the dev team** for feedback and collaboration
 - 🪙 **Stake in the $BNUT ecosystem** from day one
 
