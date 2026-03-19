@@ -3,17 +3,27 @@
  * BigNuten Subscription Frontend Module
  *
  * Handles all subscription-related interactions for the BigNuten app:
- *   - On-chain status checks via the BigNutenSubscription contract
+ *   - On-chain status checks via the DecentEscrow contract (Issue #43)
  *   - PayPal JS SDK subscription button initialisation  (Issue #40)
  *   - Stripe.js payment flow initialisation             (Issue #41)
- *   - ETH payment via MetaMask                          (Issue #43)
+ *   - ETH payment via MetaMask using DecentEscrow Plans (Issue #43)
  *   - $BNUT discounted payment via MetaMask             (Issue #44)
  *   - PayPal one-time DNFT purchase flow                (Issue #62)
+ *
+ * Subscription backend: DecentEscrow v0.1 at
+ *   0x23A457AD3C33d68E4fAd2FCa7c5d9a511E0C350e (Optimism Mainnet)
+ *
+ * The owner must first call createPlan() on the escrow to create:
+ *   Plan 0 — ETH monthly  (paymentToken = address(0))
+ *   Plan 1 — $BNUT monthly (paymentToken = BNUT address, discounted)
+ * Plan IDs are configurable via window.BIGNUTEN_ETH_PLAN_ID / BNUT_PLAN_ID.
  *
  * Prerequisites (loaded in index.html before this module):
  *   - ethers.js v6 (via CDN)
  *   - PayPal JS SDK  <script src="https://www.paypal.com/sdk/js?client-id=...">
  *   - Stripe.js      <script src="https://js.stripe.com/v3/">
+ *   - js/contracts.js (sets window.SUBSCRIPTION_CONTRACT_ADDRESS to DecentEscrow,
+ *                      and window.BIGNUTEN_ETH_PLAN_ID / BIGNUTEN_BNUT_PLAN_ID)
  *
  * Usage (ES module):
  *   import {
@@ -28,16 +38,21 @@
 
 // ─── Contract ABIs (minimal — only the functions we call) ─────────────────────
 
-/** Minimal ABI for the BigNutenSubscription contract. */
-const SUBSCRIPTION_ABI = [
+/**
+ * Minimal ABI for the DecentEscrow contract — subscription functions only.
+ * Full ABI lives in abis/DecentEscrow_v001.json.
+ */
+const DECENT_ESCROW_SUBSCRIPTION_ABI = [
   // View functions
-  "function isSubscribed(address user) view returns (bool)",
-  "function getExpiry(address user) view returns (uint256)",
-  "function ethPricePerMonth() view returns (uint256)",
-  "function bnutPricePerMonth() view returns (uint256)",
-  // State-changing functions
-  "function subscribeWithEth() payable",
-  "function subscribeWithBnut()",
+  "function isSubscribed(uint256 planId, address account) view returns (bool)",
+  "function getPlan(uint256 planId) view returns (tuple(string name, address paymentToken, uint256 pricePerPeriod, uint256 periodSeconds, bool active))",
+  "function subscriptions(address subscriber, uint256 planId) view returns (uint256)",
+  "function nextPlanId() view returns (uint256)",
+  // User function
+  "function subscribe(uint256 planId) payable",
+  // Owner-only admin functions
+  "function createPlan(string name, address paymentToken, uint256 pricePerPeriod, uint256 periodSeconds) returns (uint256 planId)",
+  "function deactivatePlan(uint256 planId)",
 ];
 
 /** Minimal ABI for the BigNuten ERC-20 token contract. */
@@ -50,17 +65,33 @@ const BNUT_ABI = [
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 /**
- * Contract addresses — update these after deploying your contracts.
- * In production, read from a config file or inject via your backend.
+ * DecentEscrow contract address — deployed on Optimism Mainnet.
+ * Used as the subscription backend via its Plan-based subscription system.
  */
-const CONTRACT_ADDRESSES = {
-  subscription:
-    window.SUBSCRIPTION_CONTRACT_ADDRESS ||
-    "0x0000000000000000000000000000000000000000",
-  bnut:
-    window.BNUT_CONTRACT_ADDRESS ||
-    "0x0000000000000000000000000000000000000000",
+const DECENT_ESCROW_ADDRESS =
+  window.SUBSCRIPTION_CONTRACT_ADDRESS ||
+  "0x23A457AD3C33d68E4fAd2FCa7c5d9a511E0C350e";
+
+/** $BNUT ERC-20 token address on Optimism Mainnet. */
+const BNUT_ADDRESS =
+  window.BNUT_CONTRACT_ADDRESS ||
+  "0x733c4d2Aae900E608147dd89Fa93606f89722823";
+
+/** Public read-only RPC for Optimism Mainnet (used for view-only calls). */
+const OPTIMISM_RPC_URL = "https://mainnet.optimism.io";
+
+/**
+ * DecentEscrow plan IDs for BigNuten subscriptions.
+ * Override by setting window.BIGNUTEN_ETH_PLAN_ID / BIGNUTEN_BNUT_PLAN_ID
+ * before this module loads (set in js/contracts.js).
+ */
+const PLAN_IDS = {
+  eth:  window.BIGNUTEN_ETH_PLAN_ID  ?? 0,
+  bnut: window.BIGNUTEN_BNUT_PLAN_ID ?? 1,
 };
+
+/** Optimism Mainnet chain ID (10) and Optimism Sepolia chain ID (11155420). */
+const SUPPORTED_CHAIN_IDS = [10, 11155420];
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
 
@@ -91,11 +122,55 @@ async function _getSigner() {
   return provider.getSigner();
 }
 
+/**
+ * Ensures MetaMask is on Optimism (Mainnet or Sepolia).
+ * If not, prompts the user to switch.
+ * Throws if the user refuses to switch.
+ *
+ * @returns {Promise<void>}
+ */
+async function _ensureOptimism() {
+  const provider = await _getProvider();
+  const network = await provider.getNetwork();
+  const chainId = Number(network.chainId);
+  if (SUPPORTED_CHAIN_IDS.includes(chainId)) return;
+
+  // Ask MetaMask to switch to Optimism Mainnet.
+  try {
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0xa" }], // 0xa = 10 (Optimism Mainnet)
+    });
+  } catch (switchErr) {
+    // EIP-1193 error 4902: chain not added — prompt to add it.
+    if (switchErr.code === 4902) {
+      await window.ethereum.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: "0xa",
+            chainName: "Optimism",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: [OPTIMISM_RPC_URL],
+            blockExplorerUrls: ["https://optimistic.etherscan.io"],
+          },
+        ],
+      });
+    } else {
+      throw new Error(
+        "Please switch MetaMask to the Optimism network to pay with crypto."
+      );
+    }
+  }
+}
+
 // ─── Exported Functions ───────────────────────────────────────────────────────
 
 /**
  * Checks whether a wallet address has an active BigNuten subscription
- * by querying the BigNutenSubscription contract on-chain.
+ * by querying the DecentEscrow contract on-chain.
+ * Checks both the ETH plan and the $BNUT plan and returns the active one
+ * with the latest expiry.
  *
  * @param {string} walletAddress - Ethereum address to check (0x…).
  * @returns {Promise<{ isSubscribed: boolean, expiry: Date | null }>}
@@ -109,20 +184,25 @@ export async function checkSubscriptionStatus(walletAddress) {
   try {
     const provider = await _getProvider();
     const contract = new ethers.Contract(
-      CONTRACT_ADDRESSES.subscription,
-      SUBSCRIPTION_ABI,
+      DECENT_ESCROW_ADDRESS,
+      DECENT_ESCROW_SUBSCRIPTION_ABI,
       provider
     );
 
-    const [active, expiryTimestamp] = await Promise.all([
-      contract.isSubscribed(walletAddress),
-      contract.getExpiry(walletAddress),
+    // Check both ETH plan and BNUT plan simultaneously.
+    const [ethActive, bnutActive, ethExpiry, bnutExpiry] = await Promise.all([
+      contract.isSubscribed(PLAN_IDS.eth,  walletAddress),
+      contract.isSubscribed(PLAN_IDS.bnut, walletAddress),
+      contract.subscriptions(walletAddress, PLAN_IDS.eth),
+      contract.subscriptions(walletAddress, PLAN_IDS.bnut),
     ]);
 
-    const expiry =
-      expiryTimestamp > 0n
-        ? new Date(Number(expiryTimestamp) * 1000)
-        : null;
+    const active = ethActive || bnutActive;
+    // Use the later of the two expiry timestamps.
+    const expiryTimestamp = ethExpiry > bnutExpiry ? ethExpiry : bnutExpiry;
+    const expiry = expiryTimestamp > 0n
+      ? new Date(Number(expiryTimestamp) * 1000)
+      : null;
 
     return { isSubscribed: active, expiry };
   } catch (err) {
@@ -321,44 +401,46 @@ export function initDnftPayPalPurchase(
 }
 
 /**
- * Sends ETH directly to the BigNutenSubscription contract via MetaMask
- * to purchase a 30-day subscription at the current ETH price.
+ * Subscribes to the BigNuten ETH plan on DecentEscrow via MetaMask.
+ * Reads the current plan price on-chain and calls `subscribe(planId)`.
  *
  * Related issue: #43 — Build Crypto Subscription Payment Flow.
  *
- * @param {string} [amountEth] - Override ETH amount (e.g. "0.01").
- *   If omitted, reads the current price from the contract.
  * @returns {Promise<string>} The transaction hash.
  *
  * @example
  *   const txHash = await payCryptoSubscription();
  *   console.log('Tx:', txHash);
  */
-export async function payCryptoSubscription(amountEth) {
+export async function payCryptoSubscription() {
+  await _ensureOptimism();
   try {
     const signer = await _getSigner();
     const contract = new ethers.Contract(
-      CONTRACT_ADDRESSES.subscription,
-      SUBSCRIPTION_ABI,
+      DECENT_ESCROW_ADDRESS,
+      DECENT_ESCROW_SUBSCRIPTION_ABI,
       signer
     );
 
-    let value;
-    if (amountEth) {
-      value = ethers.parseEther(amountEth);
-    } else {
-      // Read the current price from the contract.
-      value = await contract.ethPricePerMonth();
+    // Read the ETH plan price from the contract.
+    const plan = await contract.getPlan(PLAN_IDS.eth);
+    if (!plan.active) {
+      throw new Error(
+        `ETH subscription plan (plan ${PLAN_IDS.eth}) is not active on DecentEscrow. ` +
+          "Contact support or wait for the plan to be activated."
+      );
     }
 
+    const value = plan.pricePerPeriod;
     console.log(
-      `[subscription.js] Sending ${ethers.formatEther(value)} ETH for subscription…`
+      `[subscription.js] Subscribing via DecentEscrow plan ${PLAN_IDS.eth} ` +
+        `with ${ethers.formatEther(value)} ETH…`
     );
 
-    const tx = await contract.subscribeWithEth({ value });
+    const tx = await contract.subscribe(PLAN_IDS.eth, { value });
     console.log("[subscription.js] Tx submitted:", tx.hash);
     await tx.wait();
-    console.log("[subscription.js] Subscription confirmed on-chain!");
+    console.log("[subscription.js] ETH subscription confirmed on DecentEscrow!");
     return tx.hash;
   } catch (err) {
     console.error("[subscription.js] payCryptoSubscription error:", err);
@@ -367,44 +449,46 @@ export async function payCryptoSubscription(amountEth) {
 }
 
 /**
- * Pays for a 30-day BigNuten subscription using $BNUT tokens at the
- * discounted BNUT rate. Requests an ERC-20 approval first if needed,
- * then calls `subscribeWithBnut()` on the subscription contract.
+ * Subscribes to the BigNuten $BNUT plan on DecentEscrow via MetaMask.
+ * Reads the plan price on-chain, requests ERC-20 approval if needed,
+ * then calls `subscribe(planId)` on the DecentEscrow contract.
  *
  * Related issue: #44 — Accept $BNUT Token for Subscriptions (Discounted).
  *
- * @param {string} [amountBnut] - Override BNUT amount (e.g. "500").
- *   If omitted, reads the current price from the contract.
  * @returns {Promise<string>} The transaction hash of the subscribe call.
  *
  * @example
  *   const txHash = await payBNUTSubscription();
  *   console.log('Tx:', txHash);
  */
-export async function payBNUTSubscription(amountBnut) {
+export async function payBNUTSubscription() {
+  await _ensureOptimism();
   try {
     const signer = await _getSigner();
     const signerAddress = await signer.getAddress();
 
-    const subscriptionContract = new ethers.Contract(
-      CONTRACT_ADDRESSES.subscription,
-      SUBSCRIPTION_ABI,
+    const escrowContract = new ethers.Contract(
+      DECENT_ESCROW_ADDRESS,
+      DECENT_ESCROW_SUBSCRIPTION_ABI,
       signer
     );
 
     const bnutContract = new ethers.Contract(
-      CONTRACT_ADDRESSES.bnut,
+      BNUT_ADDRESS,
       BNUT_ABI,
       signer
     );
 
-    // Determine price.
-    let price;
-    if (amountBnut) {
-      price = ethers.parseEther(amountBnut);
-    } else {
-      price = await subscriptionContract.bnutPricePerMonth();
+    // Read the $BNUT plan price from the contract.
+    const plan = await escrowContract.getPlan(PLAN_IDS.bnut);
+    if (!plan.active) {
+      throw new Error(
+        `$BNUT subscription plan (plan ${PLAN_IDS.bnut}) is not active on DecentEscrow. ` +
+          "Contact support or wait for the plan to be activated."
+      );
     }
+
+    const price = plan.pricePerPeriod;
 
     // Check BNUT balance.
     const balance = await bnutContract.balanceOf(signerAddress);
@@ -415,33 +499,236 @@ export async function payBNUTSubscription(amountBnut) {
       );
     }
 
-    // Approve the subscription contract to spend BNUT if needed.
-    const allowance = await bnutContract.allowance(
-      signerAddress,
-      CONTRACT_ADDRESSES.subscription
-    );
-
+    // Approve DecentEscrow to spend BNUT if needed.
+    const allowance = await bnutContract.allowance(signerAddress, DECENT_ESCROW_ADDRESS);
     if (allowance < price) {
-      console.log("[subscription.js] Requesting $BNUT approval…");
-      const approveTx = await bnutContract.approve(
-        CONTRACT_ADDRESSES.subscription,
-        price
-      );
+      console.log("[subscription.js] Requesting $BNUT approval for DecentEscrow…");
+      const approveTx = await bnutContract.approve(DECENT_ESCROW_ADDRESS, price);
       await approveTx.wait();
       console.log("[subscription.js] $BNUT approval confirmed.");
     }
 
-    // Subscribe with BNUT.
+    // Subscribe via DecentEscrow (ERC-20 plan — send no ETH).
     console.log(
-      `[subscription.js] Subscribing with ${ethers.formatEther(price)} BNUT…`
+      `[subscription.js] Subscribing via DecentEscrow plan ${PLAN_IDS.bnut} ` +
+        `with ${ethers.formatEther(price)} BNUT…`
     );
-    const tx = await subscriptionContract.subscribeWithBnut();
+    const tx = await escrowContract.subscribe(PLAN_IDS.bnut);
     console.log("[subscription.js] Tx submitted:", tx.hash);
     await tx.wait();
-    console.log("[subscription.js] $BNUT subscription confirmed on-chain!");
+    console.log("[subscription.js] $BNUT subscription confirmed on DecentEscrow!");
     return tx.hash;
   } catch (err) {
     console.error("[subscription.js] payBNUTSubscription error:", err);
     throw err;
   }
+}
+
+/**
+ * Fetches the current ETH and $BNUT subscription prices from the DecentEscrow
+ * plans and updates the price display elements in the subscription modal.
+ * Silently no-ops if plans don't exist or MetaMask is unavailable.
+ *
+ * @returns {Promise<void>}
+ *
+ * @example
+ *   await loadCryptoPrices();
+ */
+export async function loadCryptoPrices() {
+  try {
+    const provider = await _getProvider();
+    const contract = new ethers.Contract(
+      DECENT_ESCROW_ADDRESS,
+      DECENT_ESCROW_SUBSCRIPTION_ABI,
+      provider
+    );
+
+    const [ethPlan, bnutPlan] = await Promise.all([
+      contract.getPlan(PLAN_IDS.eth),
+      contract.getPlan(PLAN_IDS.bnut),
+    ]);
+
+    const ethEl = document.getElementById("sub-eth-price");
+    const bnutEl = document.getElementById("sub-bnut-price");
+
+    if (ethEl && ethPlan.active) {
+      ethEl.textContent = `${ethers.formatEther(ethPlan.pricePerPeriod)} ETH / month`;
+    }
+    if (bnutEl && bnutPlan.active) {
+      bnutEl.textContent = `${ethers.formatEther(bnutPlan.pricePerPeriod)} $BNUT / month`;
+    }
+  } catch (err) {
+    console.warn("[subscription.js] loadCryptoPrices: could not fetch prices:", err.message);
+  }
+}
+
+// ─── Admin Functions (DecentEscrow owner only) ────────────────────────────────
+
+/**
+ * Fetches all plans from DecentEscrow and returns them as an array of objects.
+ * Uses a read-only public RPC so this works without MetaMask.
+ *
+ * @returns {Promise<Array<{id: number, name: string, paymentToken: string,
+ *   pricePerPeriod: bigint, periodSeconds: bigint, active: boolean}>>}
+ */
+export async function listDecentEscrowPlans() {
+  const ethers = window.ethers;
+  if (!ethers) throw new Error("ethers.js not loaded");
+
+  const provider = new ethers.JsonRpcProvider(OPTIMISM_RPC_URL);
+  const contract = new ethers.Contract(
+    DECENT_ESCROW_ADDRESS,
+    DECENT_ESCROW_SUBSCRIPTION_ABI,
+    provider
+  );
+
+  const count = Number(await contract.nextPlanId());
+  if (count === 0) return [];
+
+  const plans = await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      contract.getPlan(i).then(p => ({
+        id:             i,
+        name:           p.name,
+        paymentToken:   p.paymentToken,
+        pricePerPeriod: p.pricePerPeriod,
+        periodSeconds:  p.periodSeconds,
+        active:         p.active,
+      }))
+    )
+  );
+  return plans;
+}
+
+/**
+ * Creates a new subscription plan on DecentEscrow. Owner-only on-chain call.
+ *
+ * @param {string}  name           - Human-readable plan name (e.g. "BigNuten Monthly ETH").
+ * @param {string}  paymentToken   - ERC-20 address, or "0x0000000000000000000000000000000000000000" for ETH.
+ * @param {string}  pricePerPeriod - Price in the payment token's smallest unit (wei for ETH).
+ * @param {number}  periodSeconds  - Duration of one subscription period in seconds.
+ * @returns {Promise<{txHash: string, planId: number}>}
+ */
+export async function createDecentEscrowPlan(name, paymentToken, pricePerPeriod, periodSeconds) {
+  await _ensureOptimism();
+  const signer = await _getSigner();
+  const contract = new ethers.Contract(
+    DECENT_ESCROW_ADDRESS,
+    DECENT_ESCROW_SUBSCRIPTION_ABI,
+    signer
+  );
+
+  console.log("[subscription.js] Creating plan:", { name, paymentToken, pricePerPeriod, periodSeconds });
+  const tx = await contract.createPlan(name, paymentToken, pricePerPeriod, periodSeconds);
+  const receipt = await tx.wait();
+
+  // Parse planId from the PlanCreated event (topic 1 = indexed planId)
+  const planCreatedTopic = ethers.id("PlanCreated(uint256,string,address,uint256,uint256)");
+  const log = receipt.logs.find(l => l.topics[0] === planCreatedTopic);
+  const planId = log ? Number(BigInt(log.topics[1])) : -1;
+
+  console.log(`[subscription.js] Plan created: planId=${planId} tx=${tx.hash}`);
+  return { txHash: tx.hash, planId };
+}
+
+/**
+ * Deactivates an existing plan on DecentEscrow. Owner-only on-chain call.
+ * Deactivated plans cannot receive new subscriptions, but existing ones remain valid.
+ *
+ * @param {number} planId - The plan ID to deactivate.
+ * @returns {Promise<string>} The transaction hash.
+ */
+export async function deactivateDecentEscrowPlan(planId) {
+  await _ensureOptimism();
+  const signer = await _getSigner();
+  const contract = new ethers.Contract(
+    DECENT_ESCROW_ADDRESS,
+    DECENT_ESCROW_SUBSCRIPTION_ABI,
+    signer
+  );
+
+  console.log(`[subscription.js] Deactivating plan ${planId}…`);
+  const tx = await contract.deactivatePlan(planId);
+  await tx.wait();
+  console.log(`[subscription.js] Plan ${planId} deactivated. Tx: ${tx.hash}`);
+  return tx.hash;
+}
+
+/**
+ * Returns the list of unique subscribers for a given plan, together with their
+ * live subscription status.
+ *
+ * Implementation: queries the `Subscribed(planId, subscriber, expiresAt)` event
+ * log on DecentEscrow, deduplicates addresses, then batch-fetches the current
+ * `isSubscribed` flag and expiry timestamp for each address.
+ *
+ * @param {number} planId
+ * @returns {Promise<Array<{address: string, active: boolean, expiresAt: number}>>}
+ */
+export async function getDecentEscrowSubscribers(planId) {
+  const ethers = window.ethers;
+  if (!ethers) throw new Error("ethers.js not loaded");
+
+  const provider = new ethers.JsonRpcProvider(OPTIMISM_RPC_URL);
+  const contract = new ethers.Contract(
+    DECENT_ESCROW_ADDRESS,
+    [
+      ...DECENT_ESCROW_SUBSCRIPTION_ABI,
+      "event Subscribed(uint256 indexed planId, address indexed subscriber, uint256 expiresAt)",
+    ],
+    provider
+  );
+
+  // Query event logs — planId is the first indexed topic so we can filter cheaply.
+  // Optimism's public RPC accepts large block ranges for sparse events.
+  let logs;
+  try {
+    const filter = contract.filters.Subscribed(planId);
+    logs = await contract.queryFilter(filter, 0, "latest");
+  } catch (err) {
+    // Some RPC providers impose block-range limits; re-throw with a helpful message.
+    throw new Error(
+      `Could not query subscriber events: ${err.message}. ` +
+      `You can view all events on ` +
+      `https://optimistic.etherscan.io/address/${DECENT_ESCROW_ADDRESS}#events`
+    );
+  }
+
+  // Deduplicate — keep each address once (most recent log wins for the initial view).
+  // Use the original checksum address from ethers.js for both dedup tracking and storage.
+  const seen = new Set();
+  const unique = [];
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const addr = logs[i].args.subscriber; // checksum address from ethers.js
+    const addrKey = addr.toLowerCase();   // case-insensitive dedup key
+    if (!seen.has(addrKey)) {
+      seen.add(addrKey);
+      unique.push(addr);
+    }
+  }
+
+  if (unique.length === 0) return [];
+
+  // Batch-fetch live status for every unique subscriber.
+  const results = await Promise.all(
+    unique.map(async addr => {
+      const [active, expiresAtBn] = await Promise.all([
+        contract.isSubscribed(planId, addr),
+        contract.subscriptions(addr, planId),
+      ]);
+      return {
+        address:   addr,
+        active,
+        expiresAt: Number(expiresAtBn),
+      };
+    })
+  );
+
+  // Sort: active first, then by expiry descending.
+  results.sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return b.expiresAt - a.expiresAt;
+  });
+
+  return results;
 }

@@ -1,4 +1,4 @@
-import { initDnftPayPalPurchase } from './subscription.js';
+import { initDnftPayPalPurchase, listDecentEscrowPlans, createDecentEscrowPlan, deactivateDecentEscrowPlan, getDecentEscrowSubscribers } from './subscription.js';
 import { displayProposals, createProposal, isProposer, isAdmin, getBnutBalance, addProposer, removeProposer, mintBnutToAddress } from './governance.js';
 import { loadPayrollQueue, getTreasuryBalance, isTreasuryOwner, settlePayroll } from './treasury.js';
 
@@ -4158,6 +4158,250 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
     }
+
+    // ── Admin Panel — Subscription Plans (DecentEscrow) ───────────────────
+
+    const escrowZeroAddr = '0x0000000000000000000000000000000000000000';
+
+    /** Render the plan list inside #escrow-plans-list */
+    async function refreshEscrowPlansList() {
+      const listEl  = document.getElementById('escrow-plans-list');
+      const countEl = document.getElementById('escrow-plans-count');
+      if (!listEl) return;
+
+      listEl.innerHTML = '<p class="gov-loading">⏳ Loading plans from DecentEscrow…</p>';
+      try {
+        const plans = await listDecentEscrowPlans();
+        if (countEl) countEl.textContent = `(${plans.length} plan${plans.length !== 1 ? 's' : ''})`;
+
+        if (plans.length === 0) {
+          listEl.innerHTML = '<p class="gov-loading">No plans created yet. Use the form below to add one.</p>';
+          return;
+        }
+
+        const bnutAddr = (window.BNUT_CONTRACT_ADDRESS || '').toLowerCase();
+        const usdcAddr = '0x0b2c639c533813f4aa9d7837caf62653d097ff85';
+
+        listEl.innerHTML = plans.map(p => {
+          const isEth   = p.paymentToken === escrowZeroAddr || p.paymentToken.toLowerCase() === escrowZeroAddr;
+          const isBnut  = p.paymentToken.toLowerCase() === bnutAddr;
+          const isUsdc  = p.paymentToken.toLowerCase() === usdcAddr;
+          const tokenLabel = isEth
+            ? 'ETH'
+            : isBnut ? '$BNUT'
+            : isUsdc ? 'USDC'
+            : `${p.paymentToken.slice(0, 8)}…`;
+
+          let priceFormatted;
+          if (isEth) {
+            priceFormatted = `${ethers.formatEther(p.pricePerPeriod)} ETH`;
+          } else if (isBnut) {
+            priceFormatted = `${ethers.formatEther(p.pricePerPeriod)} BNUT`;
+          } else if (isUsdc) {
+            priceFormatted = `$${(Number(p.pricePerPeriod) / 1e6).toFixed(2)} USDC`;
+          } else {
+            priceFormatted = `${p.pricePerPeriod.toString()} (raw)`;
+          }
+
+          const days = Number(p.periodSeconds) / 86400;
+          const statusBadge = p.active
+            ? '<span style="color:#00e5ff;">● Active</span>'
+            : '<span style="color:#ff8800;">○ Inactive</span>';
+
+          return `
+            <div style="border:1px solid rgba(0,229,255,0.2); border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;">
+              <strong>Plan ${p.id}</strong> — ${p.name || '(unnamed)'}
+              &nbsp;${statusBadge}<br/>
+              <span style="color:#aaa; font-size:0.82em;">💰 ${priceFormatted} / ${days} day${days !== 1 ? 's' : ''} · token: ${tokenLabel}</span>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        listEl.innerHTML = `<p class="gov-loading" style="color:#ff4444;">❌ Could not load plans: ${err.message}</p>`;
+      }
+    }
+
+    const escrowRefreshBtn = document.getElementById('escrow-plans-refresh-btn');
+    if (escrowRefreshBtn) {
+      escrowRefreshBtn.addEventListener('click', () => refreshEscrowPlansList());
+    }
+
+    // Auto-load when admin section is opened (details toggle)
+    const escrowPlansSection = document.getElementById('escrow-plans-section');
+    if (escrowPlansSection) {
+      escrowPlansSection.addEventListener('toggle', () => {
+        if (escrowPlansSection.open) refreshEscrowPlansList();
+      });
+    }
+
+    // ── Create Plan ────────────────────────────────────────────────────────
+    const createPlanBtn    = document.getElementById('escrow-create-plan-btn');
+    const createPlanStatus = document.getElementById('escrow-create-plan-status');
+
+    if (createPlanBtn) {
+      createPlanBtn.addEventListener('click', async () => {
+        const name   = (document.getElementById('escrow-plan-name')?.value   || '').trim();
+        const token  = (document.getElementById('escrow-plan-token')?.value  || '').trim() || escrowZeroAddr;
+        const price  = (document.getElementById('escrow-plan-price')?.value  || '').trim();
+        const period = Number(document.getElementById('escrow-plan-period')?.value || 0);
+
+        if (!name) {
+          if (createPlanStatus) createPlanStatus.textContent = '⚠️ Enter a plan name.';
+          return;
+        }
+        if (!price || isNaN(Number(price)) || Number(price) <= 0) {
+          if (createPlanStatus) createPlanStatus.textContent = '⚠️ Enter a valid price.';
+          return;
+        }
+        if (!period || period <= 0) {
+          if (createPlanStatus) createPlanStatus.textContent = '⚠️ Enter a valid period (seconds > 0).';
+          return;
+        }
+
+        const isEthPlan = !token || token === escrowZeroAddr;
+        let priceWei;
+        try {
+          // ETH and BNUT are 18-decimal; USDC is 6-decimal.
+          const usdcAddr = '0x0b2c639c533813f4aa9d7837caf62653d097ff85';
+          const isUsdc   = token.toLowerCase() === usdcAddr;
+          priceWei = isUsdc
+            ? BigInt(Math.round(Number(price) * 1e6))
+            : ethers.parseEther(price);
+        } catch (_) {
+          if (createPlanStatus) createPlanStatus.textContent = '⚠️ Invalid price format.';
+          return;
+        }
+
+        createPlanBtn.disabled = true;
+        if (createPlanStatus) createPlanStatus.textContent = '⏳ Creating plan — confirm in MetaMask…';
+
+        try {
+          const { txHash, planId } = await createDecentEscrowPlan(name, token, priceWei, period);
+          if (createPlanStatus) {
+            createPlanStatus.innerHTML =
+              `✅ Plan ${planId} created! ` +
+              `<a href="https://optimistic.etherscan.io/tx/${txHash}" target="_blank" rel="noopener noreferrer" style="color:#00e5ff;">↗ Tx</a>`;
+          }
+          const nameEl   = document.getElementById('escrow-plan-name');
+          const tokenEl  = document.getElementById('escrow-plan-token');
+          const priceEl  = document.getElementById('escrow-plan-price');
+          const periodEl = document.getElementById('escrow-plan-period');
+          if (nameEl)   nameEl.value   = '';
+          if (tokenEl)  tokenEl.value  = '';
+          if (priceEl)  priceEl.value  = '';
+          if (periodEl) periodEl.value = '';
+          // Refresh the plans list
+          await refreshEscrowPlansList();
+        } catch (err) {
+          if (createPlanStatus) createPlanStatus.textContent = `❌ Failed: ${err.reason || err.message || err}`;
+        } finally {
+          createPlanBtn.disabled = false;
+        }
+      });
+    }
+
+    // ── Deactivate Plan ────────────────────────────────────────────────────
+    const deactivatePlanBtn    = document.getElementById('escrow-deactivate-plan-btn');
+    const deactivatePlanStatus = document.getElementById('escrow-deactivate-plan-status');
+
+    if (deactivatePlanBtn) {
+      deactivatePlanBtn.addEventListener('click', async () => {
+        const planIdInput = document.getElementById('escrow-deactivate-plan-id');
+        const planId = Number(planIdInput?.value ?? -1);
+
+        if (planId < 0 || isNaN(planId)) {
+          if (deactivatePlanStatus) deactivatePlanStatus.textContent = '⚠️ Enter a valid plan ID (0 or higher).';
+          return;
+        }
+
+        deactivatePlanBtn.disabled = true;
+        if (deactivatePlanStatus) deactivatePlanStatus.textContent = `⏳ Deactivating plan ${planId} — confirm in MetaMask…`;
+
+        try {
+          const txHash = await deactivateDecentEscrowPlan(planId);
+          if (deactivatePlanStatus) {
+            deactivatePlanStatus.innerHTML =
+              `✅ Plan ${planId} deactivated! ` +
+              `<a href="https://optimistic.etherscan.io/tx/${txHash}" target="_blank" rel="noopener noreferrer" style="color:#00e5ff;">↗ Tx</a>`;
+          }
+          if (planIdInput) planIdInput.value = '';
+          await refreshEscrowPlansList();
+        } catch (err) {
+          if (deactivatePlanStatus) deactivatePlanStatus.textContent = `❌ Failed: ${err.reason || err.message || err}`;
+        } finally {
+          deactivatePlanBtn.disabled = false;
+        }
+      });
+    }
+
+    // ── Subscribers List ───────────────────────────────────────────────────
+    const subsLoadBtn    = document.getElementById('escrow-subs-load-btn');
+    const subsStatus     = document.getElementById('escrow-subs-status');
+    const subsListEl     = document.getElementById('escrow-subs-list');
+    const subsCountEl    = document.getElementById('escrow-subs-count');
+
+    async function loadSubscribersList() {
+      const planId = Number(document.getElementById('escrow-subs-plan-id')?.value ?? 0);
+      if (isNaN(planId) || planId < 0) {
+        if (subsStatus) subsStatus.textContent = '⚠️ Enter a valid plan ID.';
+        return;
+      }
+
+      if (subsLoadBtn) subsLoadBtn.disabled = true;
+      if (subsStatus) subsStatus.textContent = `⏳ Querying on-chain events for plan ${planId}…`;
+      if (subsListEl) subsListEl.innerHTML = '';
+      if (subsCountEl) subsCountEl.textContent = '';
+
+      try {
+        const subscribers = await getDecentEscrowSubscribers(planId);
+        const activeCount = subscribers.filter(s => s.active).length;
+
+        if (subsCountEl) {
+          subsCountEl.textContent =
+            `(${subscribers.length} total · ${activeCount} active)`;
+        }
+        if (subsStatus) subsStatus.textContent = '';
+
+        if (subscribers.length === 0) {
+          if (subsListEl) subsListEl.innerHTML = '<p class="gov-loading">No subscribers found for this plan yet.</p>';
+          return;
+        }
+
+        const rows = subscribers.map((s, i) => {
+          const expiry = s.expiresAt
+            ? new Date(s.expiresAt * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : '—';
+          const badge = s.active
+            ? '<span style="color:#00e5ff; font-size:0.8em;">✅ Active</span>'
+            : '<span style="color:#ff8800; font-size:0.8em;">⏰ Expired</span>';
+          const explorerUrl = `https://optimistic.etherscan.io/address/${s.address}`;
+
+          return `
+            <div style="display:flex; align-items:center; gap:0.5rem; border:1px solid rgba(0,229,255,0.15);
+                        border-radius:6px; padding:0.4rem 0.75rem; margin-bottom:0.4rem; flex-wrap:wrap;">
+              <span style="color:#aaa; font-size:0.78em; min-width:1.5rem;">#${i + 1}</span>
+              <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer"
+                 style="color:#00e5ff; font-family:monospace; font-size:0.8em; word-break:break-all;">
+                ${s.address}
+              </a>
+              ${badge}
+              <span style="color:#888; font-size:0.78em; margin-left:auto;">expires ${expiry}</span>
+            </div>
+          `;
+        }).join('');
+
+        if (subsListEl) subsListEl.innerHTML = rows;
+      } catch (err) {
+        if (subsStatus) subsStatus.textContent = `❌ ${err.message}`;
+        if (subsCountEl) subsCountEl.textContent = '';
+      } finally {
+        if (subsLoadBtn) subsLoadBtn.disabled = false;
+      }
+    }
+
+    if (subsLoadBtn) {
+      subsLoadBtn.addEventListener('click', () => loadSubscribersList());
+    }
   })();
 
   // ── Wire up existing DNFT + Subscription buttons in dropdown ─────────────
@@ -4187,11 +4431,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── helpers ──
 
-    function openSubModal() {
+    function openSubModal(method) {
       subModal.classList.remove('modal-hidden');
       document.body.classList.add('modal-active');
       loadSubscriptionStatus();
       renderPaymentHistory();
+      // Load live ETH / BNUT prices from the on-chain contract.
+      import('./subscription.js').then(({ loadCryptoPrices }) => loadCryptoPrices()).catch((err) => {
+        console.warn('[subscription] could not load crypto prices:', err.message);
+      });
+      // Optionally switch to a specific payment tab (e.g. 'eth' or 'bnut')
+      if (method) {
+        const targetTab = subModal.querySelector(`.sub-method-tab[data-method="${method}"]`);
+        if (targetTab) targetTab.click();
+      }
     }
 
     function closeSubModal() {
@@ -4268,6 +4521,13 @@ document.addEventListener('DOMContentLoaded', () => {
               manageLink.href = 'https://www.paypal.com/myaccount/autopay/';
             } else if (method.toLowerCase().includes('stripe') || method.toLowerCase().includes('card')) {
               manageLink.href = 'https://billing.stripe.com/p/login/test_00000';
+            } else if (method.toLowerCase().includes('eth') || method.toLowerCase().includes('bnut')) {
+              // On-chain subscription — link to Optimism Etherscan for the contract
+              const subscriptionAddress = (window.CONTRACTS && window.CONTRACTS.subscription) || '';
+              manageLink.href = subscriptionAddress && subscriptionAddress !== '0x0000000000000000000000000000000000000000'
+                ? `https://optimistic.etherscan.io/address/${subscriptionAddress}`
+                : '#';
+              manageLink.textContent = '🔍 View on Optimism Explorer';
             } else {
               manageLink.href = '#';
             }
@@ -4369,8 +4629,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           const { payCryptoSubscription } = await import('./subscription.js');
           const txHash = await payCryptoSubscription();
-          if (ethStatus) ethStatus.textContent = `✅ Subscribed! Tx: ${txHash.slice(0, 14)}…`;
-          _saveSubscriptionLocal('ETH / MetaMask', currentPlan);
+          const explorerUrl = `https://optimistic.etherscan.io/tx/${txHash}`;
+          if (ethStatus) ethStatus.innerHTML =
+            `✅ Subscribed! <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">View Tx ↗</a>`;
+          _saveSubscriptionLocal('ETH / MetaMask', currentPlan, txHash);
           await loadSubscriptionStatus();
           renderPaymentHistory();
         } catch (err) {
@@ -4392,8 +4654,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           const { payBNUTSubscription } = await import('./subscription.js');
           const txHash = await payBNUTSubscription();
-          if (bnutStatus) bnutStatus.textContent = `✅ Subscribed! Tx: ${txHash.slice(0, 14)}…`;
-          _saveSubscriptionLocal('$BNUT Token', currentPlan);
+          const explorerUrl = `https://optimistic.etherscan.io/tx/${txHash}`;
+          if (bnutStatus) bnutStatus.innerHTML =
+            `✅ Subscribed! <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">View Tx ↗</a>`;
+          _saveSubscriptionLocal('$BNUT Token', currentPlan, txHash);
           await loadSubscriptionStatus();
           renderPaymentHistory();
         } catch (err) {
@@ -4447,7 +4711,7 @@ document.addEventListener('DOMContentLoaded', () => {
       listEl.innerHTML = raw.slice().reverse().map(p => `
         <div class="sub-history-item">
           <span class="sub-history-date">${new Date(p.date).toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' })}</span>
-          <span class="sub-history-desc">${p.description || 'Subscription'}</span>
+          <span class="sub-history-desc">${p.description || 'Subscription'}${p.txHash ? ` <a href="https://optimistic.etherscan.io/tx/${p.txHash}" target="_blank" rel="noopener noreferrer" class="sub-history-tx">↗ Tx</a>` : ''}</span>
           <span class="sub-history-amount">${p.amount || ''}</span>
           <span class="${p.ok ? 'sub-history-status-ok' : 'sub-history-status-fail'}">${p.ok ? '✔' : '✖'}</span>
         </div>
@@ -4456,16 +4720,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Helpers ──
 
-    function _saveSubscriptionLocal(method, plan) {
+    function _saveSubscriptionLocal(method, plan, txHash) {
       const expiry = new Date();
       if (plan === 'annual') expiry.setFullYear(expiry.getFullYear() + 1);
       else expiry.setMonth(expiry.getMonth() + 1);
 
+      const isCrypto = method.toLowerCase().includes('eth') || method.toLowerCase().includes('bnut');
+
       localStorage.setItem('bignuten_subscription', JSON.stringify({
         status: 'active',
         method,
-        plan: plan === 'annual' ? 'Annual · $99' : 'Monthly · $10',
+        plan: isCrypto ? 'Monthly · On-Chain' : (plan === 'annual' ? 'Annual · $99' : 'Monthly · $10'),
         expiry: expiry.toISOString(),
+        txHash: txHash || null,
       }));
 
       // Append to history
@@ -4475,9 +4742,10 @@ document.addEventListener('DOMContentLoaded', () => {
       })();
       history.push({
         date:        new Date().toISOString(),
-        description: `${plan === 'annual' ? 'Annual' : 'Monthly'} plan via ${method}`,
-        amount:      plan === 'annual' ? '$99' : '$10',
+        description: `${isCrypto ? 'Monthly (30 days)' : (plan === 'annual' ? 'Annual' : 'Monthly')} plan via ${method}`,
+        amount:      isCrypto ? '—' : (plan === 'annual' ? '$99' : '$10'),
         ok:          true,
+        txHash:      txHash || null,
       });
       localStorage.setItem('bignuten_payment_history', JSON.stringify(history));
     }
