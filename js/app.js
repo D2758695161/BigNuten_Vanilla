@@ -3765,9 +3765,11 @@ async function _doBigNutenPurchase(provider, ethers, listingId, btn, setStatus) 
 
 // --- About Modal Logic & Staff of Aesculapius Dropdown ---
 document.addEventListener('DOMContentLoaded', () => {
-  const appTitleLeft    = document.getElementById('app-title-left');
+  const appTitleName    = document.getElementById('app-title-name');
+  const aesLeft         = document.getElementById('aesculapius-left');
   const aesRight        = document.getElementById('aesculapius-right');
   const aesDropdown     = document.getElementById('aesculapius-dropdown');
+  const adminDropdown   = document.getElementById('admin-dropdown');
   const aboutModal      = document.getElementById('about-modal');
   const aboutModalClose = document.getElementById('about-modal-close');
 
@@ -3800,8 +3802,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.classList.remove('modal-active');
   }
 
-  if (appTitleLeft) {
-    appTitleLeft.addEventListener('click', () => openAboutModal(false));
+  if (appTitleName) {
+    appTitleName.addEventListener('click', () => openAboutModal(false));
   }
 
   if (aboutModalClose) {
@@ -3815,6 +3817,84 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // ── Admin dropdown (left ⚕︎) ─────────────────────────────────────────────
+
+  function openAdminDropdown() {
+    if (!adminDropdown) return;
+    adminDropdown.classList.remove('hidden');
+    aesLeft && aesLeft.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeAdminDropdown() {
+    if (!adminDropdown) return;
+    adminDropdown.classList.add('hidden');
+    aesLeft && aesLeft.setAttribute('aria-expanded', 'false');
+  }
+  window.closeAdminDropdown = closeAdminDropdown;
+
+  function toggleAdminDropdown(e) {
+    e.stopPropagation();
+    if (adminDropdown && adminDropdown.classList.contains('hidden')) {
+      openAdminDropdown();
+    } else {
+      closeAdminDropdown();
+    }
+  }
+
+  if (aesLeft) {
+    aesLeft.addEventListener('click', toggleAdminDropdown);
+    aesLeft.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleAdminDropdown(e);
+      }
+      if (e.key === 'Escape') closeAdminDropdown();
+    });
+  }
+
+  // Close admin dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (adminDropdown && !adminDropdown.classList.contains('hidden') &&
+        !adminDropdown.contains(e.target) && e.target !== aesLeft) {
+      closeAdminDropdown();
+    }
+  });
+
+  // ── Admin Panel modal (opened from admin dropdown) ───────────────────────
+
+  (function initAdminPanelModal() {
+    const adminPanelBtn   = document.getElementById('admin-panel-btn');
+    const adminPanelModal = document.getElementById('admin-panel-modal');
+    const adminPanelClose = document.getElementById('admin-panel-modal-close');
+
+    if (!adminPanelModal) return;
+
+    function openAdminPanelModal() {
+      closeAdminDropdown();
+      adminPanelModal.classList.remove('modal-hidden');
+      document.body.classList.add('modal-active');
+    }
+
+    function closeAdminPanelModal() {
+      adminPanelModal.classList.add('modal-hidden');
+      if (!document.querySelector('.modal-overlay:not(.modal-hidden)')) {
+        document.body.classList.remove('modal-active');
+      }
+    }
+
+    if (adminPanelBtn) {
+      adminPanelBtn.addEventListener('click', openAdminPanelModal);
+    }
+
+    if (adminPanelClose) {
+      adminPanelClose.addEventListener('click', closeAdminPanelModal);
+    }
+
+    adminPanelModal.addEventListener('click', (e) => {
+      if (e.target === adminPanelModal) closeAdminPanelModal();
+    });
+  })();
 
   // ── Staff of Aesculapius dropdown ────────────────────────────────────────
 
@@ -3944,8 +4024,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Helper: refresh the wallet-aware sections in the modal header
     async function refreshGovWalletStatus() {
-      const balanceEl   = document.getElementById('gov-wallet-balance');
-      const adminPanel  = document.getElementById('gov-admin-panel');
+      const balanceEl     = document.getElementById('gov-wallet-balance');
       const createWrapper = document.getElementById('gov-create-btn-wrapper');
 
       if (!window.ethereum) return;
@@ -3966,12 +4045,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (createWrapper) {
           const canPropose = await isProposer(addr);
           createWrapper.style.display = canPropose ? 'block' : 'none';
-        }
-
-        // Admin panel (DEFAULT_ADMIN_ROLE)
-        if (adminPanel) {
-          const adminStatus = await isAdmin(addr);
-          adminPanel.style.display = adminStatus ? 'block' : 'none';
         }
       } catch (_) { /* wallet not ready */ }
     }
@@ -4765,7 +4838,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }());
 
   (function initPayrollModal() {
-    const payrollBtn   = document.getElementById('aes-payroll-btn');
+    const payrollBtn   = document.getElementById('admin-payroll-btn');
     const payrollModal = document.getElementById('payroll-modal');
     const payrollClose = document.getElementById('payroll-modal-close');
 
@@ -5014,26 +5087,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // ── Show Payroll button only to treasury owner ─────────────────────────
-
-    async function maybeShowPayrollButton() {
-      if (!payrollBtn || !window.ethereum) return;
-      try {
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        const accounts = await provider.send('eth_accounts', []);
-        if (!accounts || accounts.length === 0) return;
-        const isOwner = await isTreasuryOwner(accounts[0]);
-        payrollBtn.style.display = isOwner ? 'block' : 'none';
-      } catch (_) { /* wallet not ready */ }
-    }
-
-    // Run on wallet connect or account change.
-    if (window.ethereum) {
-      window.ethereum.on('accountsChanged', maybeShowPayrollButton);
-    }
-    // Also check once on load.
-    maybeShowPayrollButton();
-
     // ── Settle All Pending button ─────────────────────────────────────────
 
     const settleBtn    = document.getElementById('payroll-settle-btn');
@@ -5157,7 +5210,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (payrollBtn) {
       payrollBtn.addEventListener('click', async () => {
-        closeAesDropdown();
+        closeAdminDropdown();
         payrollModal.classList.remove('modal-hidden');
         document.body.classList.add('modal-active');
         await refreshPayrollModal();
@@ -5344,10 +5397,31 @@ document.addEventListener('DOMContentLoaded', () => {
     // Quick Mint form
     const quickMintBtn    = document.getElementById('treasury-quick-mint-btn');
     const quickMintStatus = document.getElementById('treasury-quick-mint-status');
+    const mintToTreasuryCb = document.getElementById('treasury-mint-to-treasury');
+    const mintAddrEl       = document.getElementById('treasury-quick-mint-addr');
+
+    // Pre-fill treasury address display and wire "Mint to Treasury" checkbox
+    const transferAddrDisplay = document.getElementById('treasury-transfer-addr-display');
+    if (transferAddrDisplay) transferAddrDisplay.textContent = TREASURY_ADDR;
+
+    if (mintToTreasuryCb && mintAddrEl) {
+      mintToTreasuryCb.addEventListener('change', () => {
+        if (mintToTreasuryCb.checked) {
+          mintAddrEl.value = TREASURY_ADDR;
+          mintAddrEl.disabled = true;
+        } else {
+          mintAddrEl.value = '';
+          mintAddrEl.disabled = false;
+        }
+      });
+    }
 
     if (quickMintBtn) {
       quickMintBtn.addEventListener('click', async () => {
-        const toAddr = (document.getElementById('treasury-quick-mint-addr')?.value || '').trim();
+        const mintToTreasury = mintToTreasuryCb?.checked || false;
+        const toAddr = mintToTreasury
+          ? TREASURY_ADDR
+          : (mintAddrEl?.value || '').trim();
         const amount = Number(document.getElementById('treasury-quick-mint-amount')?.value || 0);
         const reason = (document.getElementById('treasury-quick-mint-reason')?.value || '').trim();
 
@@ -5361,18 +5435,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         quickMintBtn.disabled = true;
-        if (quickMintStatus) quickMintStatus.textContent = '⏳ Minting via MetaMask…';
+        if (quickMintStatus) quickMintStatus.textContent = `⏳ Minting${mintToTreasury ? ' to treasury' : ''} via MetaMask…`;
 
         try {
-          const txHash = await mintBnutToAddress(toAddr, amount, reason || 'Quick mint');
+          const defaultReason = mintToTreasury ? 'treasury fund' : 'Quick mint';
+          const txHash = await mintBnutToAddress(toAddr, amount, reason || defaultReason);
           if (quickMintStatus) {
             const txUrl = `https://optimistic.etherscan.io/tx/${txHash}`;
-            quickMintStatus.innerHTML = `✅ Minted ${amount} $BNUT! <a href="${txUrl}" target="_blank" rel="noopener" style="color:#00e5ff;">View tx ↗</a>`;
+            const dest  = mintToTreasury ? ' to treasury' : '';
+            quickMintStatus.innerHTML = `✅ Minted ${amount} $BNUT${dest}! <a href="${txUrl}" target="_blank" rel="noopener" style="color:#00e5ff;">View tx ↗</a>`;
           }
-          const addrEl   = document.getElementById('treasury-quick-mint-addr');
+          if (!mintToTreasury && mintAddrEl) mintAddrEl.value = '';
           const amtEl    = document.getElementById('treasury-quick-mint-amount');
           const reasonEl = document.getElementById('treasury-quick-mint-reason');
-          if (addrEl)   addrEl.value   = '';
           if (amtEl)    amtEl.value    = '';
           if (reasonEl) reasonEl.value = '';
           // Refresh metrics after mint
@@ -5381,6 +5456,67 @@ document.addEventListener('DOMContentLoaded', () => {
           if (quickMintStatus) quickMintStatus.textContent = `❌ Mint failed: ${err.reason || err.message || err}`;
         } finally {
           quickMintBtn.disabled = false;
+        }
+      });
+    }
+
+    // Transfer to Treasury form
+    const transferBtn    = document.getElementById('treasury-transfer-btn');
+    const transferStatus = document.getElementById('treasury-transfer-status');
+
+    if (transferBtn) {
+      transferBtn.addEventListener('click', async () => {
+        const amount = Number(document.getElementById('treasury-transfer-amount')?.value || 0);
+
+        if (!amount || amount <= 0) {
+          if (transferStatus) transferStatus.textContent = '⚠️ Enter a positive amount.';
+          return;
+        }
+        if (!TREASURY_ADDR || TREASURY_ADDR === '0x0000000000000000000000000000000000000000') {
+          if (transferStatus) transferStatus.textContent = '⚠️ Treasury address not configured.';
+          return;
+        }
+        if (!window.ethereum) {
+          if (transferStatus) transferStatus.textContent = '⚠️ MetaMask not detected.';
+          return;
+        }
+
+        transferBtn.disabled = true;
+        if (transferStatus) transferStatus.textContent = '⏳ Sending via MetaMask…';
+
+        try {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          const network  = await provider.getNetwork();
+          if (Number(network.chainId) !== 10) {
+            throw new Error('Please switch MetaMask to Optimism Mainnet (chain ID 10).');
+          }
+          const signer = await provider.getSigner();
+          const bnut   = new ethers.Contract(BNUT_ADDR, [
+            'function transfer(address to, uint256 amount) returns (bool)',
+            'function balanceOf(address account) view returns (uint256)',
+          ], signer);
+
+          const amountWei  = ethers.parseEther(String(amount));
+          const walletAddr = await signer.getAddress();
+          const balance    = await bnut.balanceOf(walletAddr);
+          if (balance < amountWei) {
+            throw new Error(`Insufficient $BNUT balance. You have ${Number(ethers.formatEther(balance)).toLocaleString(undefined, { maximumFractionDigits: 2 })} $BNUT.`);
+          }
+
+          const tx = await bnut.transfer(TREASURY_ADDR, amountWei);
+          await tx.wait();
+
+          if (transferStatus) {
+            const txUrl = `https://optimistic.etherscan.io/tx/${tx.hash}`;
+            transferStatus.innerHTML = `✅ Transferred ${amount} $BNUT to treasury! <a href="${txUrl}" target="_blank" rel="noopener" style="color:#00e5ff;">View tx ↗</a>`;
+          }
+          const amtEl = document.getElementById('treasury-transfer-amount');
+          if (amtEl) amtEl.value = '';
+          await loadTreasuryMetrics();
+        } catch (err) {
+          if (transferStatus) transferStatus.textContent = `❌ Transfer failed: ${err.reason || err.message || err}`;
+        } finally {
+          transferBtn.disabled = false;
         }
       });
     }
