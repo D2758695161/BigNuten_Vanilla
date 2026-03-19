@@ -1,4 +1,13 @@
 {
-  "pending": [],
+  "pending": [
+    {
+      "issueRef": "TheJollyLaMa/BigNuten_Vanilla#77",
+      "contributor": "0x807061DF657A7697c04045dA7d16D941861cAABc",
+      "contributorGithub": "TheJollyLaMa",
+      "amount": "1",
+      "queuedAt": "2026-03-19T14:26:25.404Z",
+      "queuedBy": "TheJollyLaMa"
+    }
+  ],
   "settled": []
 }
