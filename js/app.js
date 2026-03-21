@@ -5251,7 +5251,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const BOUNTY_LABEL_RE = /^bounty:\s*(\d+(?:\.\d+)?)\s*bnut$/i;
     const DEFAULT_BOUNTY_AMOUNT = '1';
     /** Delay (ms) after settling before re-querying chain events for indexing. */
-    const CHAIN_INDEXING_DELAY_MS = 4000;
+    const CHAIN_INDEXING_DELAY_MS = 8000;
 
     async function fetchPendingBountiesFromGitHub() {
       // Load contributor wallet map
@@ -5372,6 +5372,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Mark a row as settled in the UI ──────────────────────────────────
     function markRowSettled(rowIdx, txHash) {
+      const rowEl    = document.getElementById(`payroll-row-${rowIdx}`);
       const statusEl = document.getElementById(`payroll-row-status-${rowIdx}`);
       const msgEl    = document.getElementById(`payroll-row-msg-${rowIdx}`);
       const sendBtn  = document.querySelector(`.payroll-send-btn[data-idx="${rowIdx}"]`);
@@ -5385,6 +5386,126 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (sendBtn) sendBtn.disabled = true;
       if (markBtn) markBtn.disabled = true;
+      // Fade out and remove the row after a short delay so the user can see the tx hash
+      if (rowEl) {
+        rowEl.style.transition = 'opacity 1.5s';
+        rowEl.style.opacity = '0.3';
+        setTimeout(() => {
+          rowEl.style.display = 'none';
+        }, 1500);
+      }
+    }
+
+    /**
+     * Unique per-entry key for the on-chain issuePaid mapping.
+     * Appending the contributor address ensures multiple contributors on the
+     * same issue each get an independent contract-level payment record.
+     * @param {object} p  Queue entry with issueRef and contributor fields.
+     * @returns {string}
+     */
+    function entryKey(p) {
+      return p.contributor && p.contributor !== '0x0000000000000000000000000000000000000000'
+        ? `${p.issueRef}:${p.contributor.toLowerCase()}`
+        : p.issueRef;
+    }
+
+    // ── Render batch preview: per-wallet tally with issue breakdown ───────
+    function renderBatchPreview(pending, paidOnChain) {
+      const previewEl = document.getElementById('payroll-batch-preview');
+      if (!previewEl) return;
+
+      const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+      const eligible  = pending.filter(p =>
+        p.contributor && p.contributor !== ZERO_ADDR && !paidOnChain.has(entryKey(p))
+      );
+      const skipped   = pending.filter(p =>
+        (!p.contributor || p.contributor === ZERO_ADDR) && !paidOnChain.has(entryKey(p))
+      );
+      const alreadyPaidCount = pending.filter(p => paidOnChain.has(entryKey(p))).length;
+
+      if (eligible.length === 0) {
+        let html = '<div class="payroll-batch-preview-card">';
+        if (skipped.length > 0) {
+          const githubs = [...new Set(skipped.map(p => p.contributorGithub).filter(Boolean))];
+          html += `<p class="payroll-batch-warning">⚠️ All pending payouts are skipped — no wallet registered for: ${githubs.map(g => `@${g}`).join(', ')}</p>`;
+        } else {
+          html += '<p class="payroll-batch-info">✅ No eligible payouts to batch.</p>';
+        }
+        html += '</div>';
+        previewEl.innerHTML = html;
+        return;
+      }
+
+      // Group by wallet address (case-insensitive key)
+      const walletMap = new Map();
+      for (const p of eligible) {
+        const key = p.contributor.toLowerCase();
+        if (!walletMap.has(key)) {
+          walletMap.set(key, {
+            contributor: p.contributor,
+            github:      p.contributorGithub || '',
+            total:       0,
+            entries:     [],
+          });
+        }
+        const w = walletMap.get(key);
+        w.total += parseFloat(p.amount || '1');
+        w.entries.push(p);
+      }
+
+      const totalBNUT = eligible.reduce((s, p) => s + parseFloat(p.amount || '1'), 0);
+
+      let html = `
+        <div class="payroll-batch-preview-card">
+          <div class="payroll-batch-preview-header">
+            <strong>📋 Batch Preview</strong>
+            <span class="payroll-batch-summary">${walletMap.size} wallet(s) · ${eligible.length} payout(s) · ${totalBNUT.toLocaleString(undefined, { maximumFractionDigits: 4 })} BNUT total</span>
+          </div>
+          <div class="payroll-table-wrap">
+            <table class="payroll-tally-table">
+              <thead>
+                <tr>
+                  <th>Wallet</th>
+                  <th>GitHub</th>
+                  <th>Issues Covered</th>
+                  <th>Total BNUT</th>
+                </tr>
+              </thead>
+              <tbody>
+      `;
+
+      for (const [, w] of walletMap) {
+        const walletShort = `${w.contributor.slice(0, 10)}…${w.contributor.slice(-4)}`;
+        const issueLinks  = w.entries.map(p => {
+          const issueNum = (p.issueRef || '').match(/#(\d+)/)?.[1];
+          const repo     = (p.issueRef || '').split('#')[0] || REPO_SLUG;
+          return issueNum
+            ? `<a href="https://github.com/${repo}/issues/${issueNum}" target="_blank" rel="noopener" class="payroll-issue-link" title="${p.issueRef} — ${p.amount} BNUT">#${issueNum}&nbsp;(${p.amount})</a>`
+            : (p.issueRef || '—');
+        }).join(' · ');
+
+        html += `
+              <tr>
+                <td><code class="payroll-wallet-addr" title="${w.contributor}">${walletShort}</code></td>
+                <td>@${w.github || '—'}</td>
+                <td class="payroll-tally-issues">${issueLinks}</td>
+                <td class="payroll-tally-total">${w.total.toLocaleString(undefined, { maximumFractionDigits: 4 })} BNUT</td>
+              </tr>
+        `;
+      }
+
+      html += '</tbody></table></div>';
+
+      if (skipped.length > 0) {
+        const githubs = [...new Set(skipped.map(p => p.contributorGithub).filter(Boolean))];
+        html += `<p class="payroll-batch-warning">⚠️ ${skipped.length} payout(s) skipped — no wallet registered for: ${githubs.map(g => `@${g}`).join(', ')}</p>`;
+      }
+      if (alreadyPaidCount > 0) {
+        html += `<p class="payroll-batch-info">ℹ️ ${alreadyPaidCount} payout(s) already settled on-chain and excluded from batch.</p>`;
+      }
+
+      html += '</div>';
+      previewEl.innerHTML = html;
     }
 
     // ── Render pending payouts as a full table ────────────────────────────
@@ -5404,6 +5525,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
 
+      // Split the queue into still-pending vs already settled on-chain so the
+      // pending table only shows actionable rows.
+      const unpaidEntries = _pendingQueue.filter((p, _i) => !_paidOnChain.has(entryKey(p)));
+      const paidEntries   = _pendingQueue.filter((p, _i) =>  _paidOnChain.has(entryKey(p)));
+
+      if (unpaidEntries.length === 0) {
+        const paidNotice = paidEntries.length > 0
+          ? `<p class="gov-loading">✅ All ${paidEntries.length} payout(s) have been settled on-chain — see "Recently Settled" below.</p>`
+          : '<p class="gov-loading">🎉 No pending payouts — queue is empty!</p>';
+        listEl.innerHTML = paidNotice;
+        if (actionsEl) actionsEl.style.display = 'block';
+        renderBatchPreview(_pendingQueue, _paidOnChain);
+        return;
+      }
+
       let html = `
         <div class="payroll-table-wrap">
           <table class="payroll-table">
@@ -5420,10 +5556,14 @@ document.addEventListener('DOMContentLoaded', () => {
             <tbody>
       `;
 
+      // Render only unpaid entries.  Use the original index (i) in the full
+      // _pendingQueue array so that data-idx on buttons still maps correctly.
       _pendingQueue.forEach((p, i) => {
-        const alreadyPaid = _paidOnChain.has(p.issueRef);
+        const alreadyPaid = _paidOnChain.has(entryKey(p));
+        if (alreadyPaid) return; // skip settled rows — they appear in "Recently Settled"
+
         const hasWallet   = p.contributor && p.contributor !== ZERO_ADDR;
-        const status      = alreadyPaid ? 'paid-on-chain' : (hasWallet ? 'pending' : 'needs-wallet');
+        const status      = hasWallet ? 'pending' : 'needs-wallet';
         const issueNum    = (p.issueRef || '').match(/#(\d+)/)?.[1] || '';
         const repoSlug    = (p.issueRef || '').split('#')[0] || 'TheJollyLaMa/BigNuten_Vanilla';
         const issueHref   = issueNum ? `https://github.com/${repoSlug}/issues/${issueNum}` : '#';
@@ -5437,15 +5577,13 @@ document.addEventListener('DOMContentLoaded', () => {
           : `<span class="payroll-badge payroll-badge--needs-wallet">⚠️ needs wallet</span>`;
 
         let statusCell;
-        if (alreadyPaid) {
-          statusCell = '<span class="payroll-status payroll-status--settled">✅ Already Paid On-Chain</span>';
-        } else if (status === 'needs-wallet') {
+        if (status === 'needs-wallet') {
           statusCell = '<span class="payroll-status payroll-status--needs-wallet">needs-wallet</span>';
         } else {
           statusCell = '<span class="payroll-status payroll-status--pending">pending</span>';
         }
 
-        const needsWalletNotice = !hasWallet && !alreadyPaid ? `
+        const needsWalletNotice = !hasWallet ? `
           <div class="payroll-needs-wallet-notice">
             ⚠️ Waiting for @${p.contributorGithub || 'contributor'} to register wallet
             <button class="payroll-copy-invite-btn gov-admin-action-btn"
@@ -5454,10 +5592,10 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         ` : '';
 
-        const disableActions = alreadyPaid || !hasWallet;
+        const disableActions = !hasWallet;
 
         html += `
-          <tr id="payroll-row-${i}" class="payroll-row${!hasWallet ? ' payroll-row--needs-wallet' : ''}${alreadyPaid ? ' payroll-row--paid' : ''}">
+          <tr id="payroll-row-${i}" class="payroll-row${!hasWallet ? ' payroll-row--needs-wallet' : ''}">
             <td>@${p.contributorGithub || '—'}</td>
             <td>${issueCell}</td>
             <td>
@@ -5471,7 +5609,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 Send
               </button>
               <button class="gov-admin-action-btn payroll-mark-paid-btn" data-idx="${i}"
-                ${alreadyPaid ? 'disabled' : ''} style="font-size:0.7rem;padding:0.2rem 0.5rem;background:rgba(100,100,100,0.3);">
+                style="font-size:0.7rem;padding:0.2rem 0.5rem;background:rgba(100,100,100,0.3);">
                 ✓ Mark Paid
               </button>
               <div class="payroll-row-msg" id="payroll-row-msg-${i}"></div>
@@ -5481,9 +5619,19 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       html += '</tbody></table></div>';
+
+      // Compact notice for entries already settled — avoids re-listing them here
+      if (paidEntries.length > 0) {
+        html += `<p style="font-size:0.82rem;color:#76e0a0;margin-top:0.5rem;text-align:center;">` +
+          `✅ ${paidEntries.length} payout(s) already settled on-chain — see "Recently Settled" below.</p>`;
+      }
+
       listEl.innerHTML = html;
 
       if (actionsEl) actionsEl.style.display = 'block';
+
+      // Populate per-wallet batch preview
+      renderBatchPreview(_pendingQueue, _paidOnChain);
 
       // ── Per-row "Send" button — uses treasury.settlePayroll() ────────────
       listEl.querySelectorAll('.payroll-send-btn').forEach(btn => {
@@ -5585,11 +5733,14 @@ document.addEventListener('DOMContentLoaded', () => {
           `<a href="https://optimistic.etherscan.io/address/${TREASURY_ADDR}" target="_blank" rel="noopener" class="payroll-explorer-link" title="BNUT Treasury: ${TREASURY_ADDR}">` +
           `<code class="payroll-wallet-addr">📜 ${shortenAddr(TREASURY_ADDR)}</code></a>`;
 
-        const issueNum  = (ev.issueRef || '').match(/#(\d+)/)?.[1] || '';
-        const repoSlug  = (ev.issueRef || '').split('#')[0] || REPO_SLUG;
+        // Strip compound-key wallet suffix if present (on-chain issueRef may be
+        // "org/repo#N:0x…" for multi-contributor issues; display only "org/repo#N").
+        const displayRef = (ev.issueRef || '').replace(/:0x[0-9a-fA-F]+$/i, '');
+        const issueNum  = displayRef.match(/#(\d+)/)?.[1] || '';
+        const repoSlug  = displayRef.split('#')[0] || REPO_SLUG;
         const issueLink = issueNum
-          ? `<a href="https://github.com/${repoSlug}/issues/${issueNum}" target="_blank" rel="noopener" class="payroll-issue-link">${ev.issueRef}</a>`
-          : (ev.issueRef || '—');
+          ? `<a href="https://github.com/${repoSlug}/issues/${issueNum}" target="_blank" rel="noopener" class="payroll-issue-link">${displayRef}</a>`
+          : (displayRef || '—');
 
         const ts = ev.timestamp
           ? new Date(ev.timestamp * 1000).toUTCString()
@@ -5625,10 +5776,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // Pending: always use payroll-queue.json as the authoritative source
         const queue = await loadPayrollQueue();
         const pending = queue.pending || [];
-        const uniqueRefs = [...new Set(pending.map(p => p.issueRef).filter(Boolean))];
+        // Check per-entry compound keys (issueRef:contributor) so multiple contributors
+        // on the same issue are each tracked independently on-chain.
         const paidOnChain = new Set();
-        await Promise.all(uniqueRefs.map(async ref => {
-          try { if (await isIssuePaid(ref)) paidOnChain.add(ref); } catch (_) {}
+        await Promise.all(pending.map(async p => {
+          if (!p.issueRef) return;
+          try {
+            const key = entryKey(p);
+            if (await isIssuePaid(key)) paidOnChain.add(key);
+          } catch (_) {}
         }));
         renderPendingList(pending, paidOnChain);
 
@@ -5642,7 +5798,22 @@ document.addEventListener('DOMContentLoaded', () => {
           if (settledListEl) {
             settledListEl.innerHTML =
               `<p style="color:#ff6b6b;">❌ On-chain query failed: ${chainErr.message}</p>` +
-              `<p style="color:#aaa;font-size:0.85rem;">Check your network connection and RPC availability, then reload.</p>`;
+              `<p style="color:#aaa;font-size:0.85rem;">` +
+              `<a href="#" id="payroll-settled-retry" style="color:#00e5ff;">🔄 Retry</a> · ` +
+              `Check your network connection and that MetaMask is on Optimism Mainnet.</p>`;
+            const retryLink = document.getElementById('payroll-settled-retry');
+            if (retryLink) {
+              retryLink.addEventListener('click', async (e) => {
+                e.preventDefault();
+                settledListEl.innerHTML = '<p class="gov-loading">⏳ Loading on-chain settlement history…</p>';
+                try {
+                  const retryEvents = await getContributorPaidEvents();
+                  renderSettledList(retryEvents);
+                } catch (retryErr) {
+                  settledListEl.innerHTML = `<p style="color:#ff6b6b;">❌ Retry failed: ${retryErr.message}</p>`;
+                }
+              });
+            }
           }
         }
         if (!settledQueryFailed) {
@@ -5668,32 +5839,69 @@ document.addEventListener('DOMContentLoaded', () => {
     if (settleBtn) {
       settleBtn.addEventListener('click', async () => {
         settleBtn.disabled = true;
-        if (settleStatus) settleStatus.textContent = '⏳ Preparing batch…';
+        if (settleStatus) settleStatus.textContent = '⏳ Verifying payment status on-chain…';
 
         const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
 
-        // Only include entries that have a wallet and are NOT already paid on-chain.
+        // ── Fresh double-pay guard: re-verify all entries on-chain ──────────
+        // Use per-entry compound keys so multiple contributors on the same issue
+        // are independently checked. Seed from the cached set.
+        const freshPaidOnChain = new Set(_paidOnChain);
+        const eligibleForCheck = _pendingQueue.filter(p =>
+          p.contributor && p.contributor !== ZERO_ADDR
+        );
+        await Promise.all(eligibleForCheck.map(async p => {
+          const key = entryKey(p);
+          try { if (await isIssuePaid(key)) freshPaidOnChain.add(key); } catch (_) {}
+        }));
+
+        // ── Build eligible set (has wallet, not already paid) ────────────────
         const toSettle = _pendingQueue
           .map((p, i) => ({ p, i }))
           .filter(({ p }) =>
             p.contributor &&
             p.contributor !== ZERO_ADDR &&
-            !_paidOnChain.has(p.issueRef)
+            !freshPaidOnChain.has(entryKey(p))
           );
 
+        // Warn about skipped wallets
+        const skippedWallets = _pendingQueue.filter(p =>
+          (!p.contributor || p.contributor === ZERO_ADDR) && !freshPaidOnChain.has(entryKey(p))
+        );
+
         if (toSettle.length === 0) {
-          if (settleStatus) settleStatus.textContent = '🎉 No pending payouts to settle!';
+          let msg = '🎉 No pending payouts to settle!';
+          if (skippedWallets.length > 0) {
+            const githubs = [...new Set(skippedWallets.map(p => p.contributorGithub).filter(Boolean))];
+            msg += ` (${skippedWallets.length} skipped — no wallet registered for: ${githubs.map(g => `@${g}`).join(', ')})`;
+          }
+          if (settleStatus) settleStatus.textContent = msg;
           settleBtn.disabled = false;
           return;
         }
 
-        // Build the payout batch.
+        // ── Build per-wallet tally for audit notes ───────────────────────────
+        const walletTally = new Map();
+        for (const { p } of toSettle) {
+          const key = p.contributor.toLowerCase();
+          if (!walletTally.has(key)) {
+            walletTally.set(key, { contributor: p.contributor, github: p.contributorGithub || '', total: 0, issues: [] });
+          }
+          const w = walletTally.get(key);
+          w.total += parseFloat(p.amount || '1');
+          w.issues.push(p.issueRef);
+        }
+
+        // ── Build the payout batch — compound keys ensure uniqueness per entry ──
+        // Using "${issueRef}:${contributor}" as the on-chain issueRef means
+        // multiple contributors on the same issue each get an independent
+        // issuePaid record, preventing cross-contributor revert.
         const payouts = toSettle.map(({ p }) => {
           const amount = Math.max(1, parseInt(p.amount || '1', 10));
-          return { contributor: p.contributor, amount: String(amount), issueRef: p.issueRef };
+          return { contributor: p.contributor, amount: String(amount), issueRef: entryKey(p) };
         });
 
-        // Treasury balance pre-check — never fall back to mint.
+        // ── Treasury balance pre-check — never fall back to mint ─────────────
         const totalNeeded = payouts.reduce((sum, p) => sum + parseFloat(p.amount), 0);
         try {
           const bal = await getTreasuryBalance();
@@ -5715,7 +5923,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (settleStatus) {
           settleStatus.textContent =
-            `⏳ Settling ${payouts.length} payout(s) via batchPayContributors — MetaMask will prompt…`;
+            `⏳ Settling ${payouts.length} payout(s) for ${walletTally.size} wallet(s) — MetaMask will prompt…`;
+        }
+
+        let skippedMsg = '';
+        if (skippedWallets.length > 0) {
+          const githubs = [...new Set(skippedWallets.map(p => p.contributorGithub).filter(Boolean))];
+          skippedMsg = ` · ${skippedWallets.length} skipped (no wallet: ${githubs.map(g => `@${g}`).join(', ')})`;
         }
 
         try {
@@ -5724,19 +5938,54 @@ document.addEventListener('DOMContentLoaded', () => {
           // Mark all settled rows in the UI.
           toSettle.forEach(({ i }) => markRowSettled(i, txHash));
 
+          // Refresh the batch preview to reflect the new on-chain state
+          const newPaid = new Set(freshPaidOnChain);
+          toSettle.forEach(({ p }) => newPaid.add(entryKey(p)));
+          _paidOnChain = newPaid;
+          renderBatchPreview(_pendingQueue, _paidOnChain);
+
           if (settleStatus) {
             const txUrl = `https://optimistic.etherscan.io/tx/${txHash}`;
+            // Build per-wallet audit summary
+            const auditLines = [...walletTally.values()]
+              .map(w => `• @${w.github || w.contributor.slice(0, 10)}…${w.contributor.slice(-4)}: ${w.total} BNUT — ${w.issues.map(r => r.replace(/:0x[0-9a-fA-F]+$/i, '')).join(', ')}`)
+              .join('<br>');
             settleStatus.innerHTML =
-              `✅ All ${payouts.length} payout(s) settled! ` +
-              `<a href="${txUrl}" target="_blank" rel="noopener" style="color:#00e5ff;">View on Optimism Explorer ↗</a>` +
-              `<br><small>Settled payouts will appear in the "Recently Settled" section after chain confirmation.</small>`;
+              `✅ ${payouts.length} payout(s) settled for ${walletTally.size} wallet(s)${skippedMsg}!<br>` +
+              `<a href="${txUrl}" target="_blank" rel="noopener" style="color:#00e5ff;">View on Optimism Explorer ↗</a><br>` +
+              `<details style="margin-top:0.4rem;font-size:0.8rem;"><summary style="cursor:pointer;color:#aacfdd;">📋 Audit trail — click to expand</summary>` +
+              `<div style="margin-top:0.4rem;line-height:1.8;">${auditLines}</div></details>` +
+              `<small style="color:#aaa;">Settled payouts will appear in "Recently Settled" after chain confirmation.</small>`;
           }
           // Refresh the settled list from chain after a short delay for indexing
+          const settledListElForRefresh = document.getElementById('payroll-settled-list');
+          if (settledListElForRefresh) {
+            settledListElForRefresh.innerHTML = '<p class="gov-loading">⏳ Refreshing settlement history…</p>';
+          }
           setTimeout(async () => {
             try {
               const freshEvents = await getContributorPaidEvents();
               renderSettledList(freshEvents);
-            } catch (_) {}
+            } catch (refreshErr) {
+              if (settledListElForRefresh) {
+                settledListElForRefresh.innerHTML =
+                  `<p style="color:#ff6b6b;">❌ Could not refresh settled list: ${refreshErr.message}</p>` +
+                  `<p style="color:#aaa;font-size:0.85rem;"><a href="#" id="payroll-settled-retry-post" style="color:#00e5ff;">🔄 Retry</a></p>`;
+                const retryPost = document.getElementById('payroll-settled-retry-post');
+                if (retryPost) {
+                  retryPost.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    settledListElForRefresh.innerHTML = '<p class="gov-loading">⏳ Loading on-chain settlement history…</p>';
+                    try {
+                      renderSettledList(await getContributorPaidEvents());
+                    } catch (retryPostErr) {
+                      settledListElForRefresh.innerHTML =
+                        `<p style="color:#ff6b6b;">❌ Could not load settled list: ${retryPostErr.message}</p>`;
+                    }
+                  });
+                }
+              }
+            }
           }, CHAIN_INDEXING_DELAY_MS);
         } catch (err) {
           if (settleStatus) settleStatus.textContent = _friendlyTxError(err);

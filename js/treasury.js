@@ -186,18 +186,39 @@ export async function isIssuePaid(issueRef) {
 
 /**
  * Optimism block at which BigNutenTreasury was deployed (2026-03-19).
+ * Used as the lower bound when scanning for ContributorPaid events.
  */
 const TREASURY_DEPLOY_BLOCK = 130_000_000;
 
 /**
- * Safe chunk size for Optimism public RPC (capped at ~10,000 blocks per request).
+ * Safe chunk size per queryFilter request (Optimism public RPC caps at ~10 000 blocks).
  */
 const RPC_BLOCK_CHUNK = 9_000;
 
 /**
+ * Max parallel queryFilter requests sent at once.
+ * Keeps the public-RPC rate limiter happy while still being ~5× faster than
+ * sequential iteration.
+ */
+const CHUNK_CONCURRENCY = 5;
+
+/**
  * Query all ContributorPaid events emitted by the BigNutenTreasury contract.
  * Returns events sorted most-recent first.
- * Throws on RPC/ABI errors so callers can surface the error to the user.
+ *
+ * Always uses a public Optimism JSON-RPC for log queries.  MetaMask's injected
+ * provider routes through Infura which rejects `eth_getLogs` requests that span
+ * more than ~2000 blocks — far less than our 9000-block chunks.  The public
+ * `mainnet.optimism.io` endpoint supports up to 10000 blocks per request and
+ * is the correct choice for read-only archive queries.
+ *
+ * Block chunks are fetched in parallel batches of CHUNK_CONCURRENCY to stay
+ * well under the per-endpoint rate limit while still completing quickly.
+ *
+ * The scan window starts at `max(TREASURY_DEPLOY_BLOCK, latestBlock - 500_000)`,
+ * which covers the last ~11 days of Optimism blocks.  This makes the function
+ * robust against an inaccurate TREASURY_DEPLOY_BLOCK constant while keeping
+ * the number of chunks small (≤ 56 chunks for a 500k-block window).
  *
  * @returns {Promise<Array<{contributor: string, issueRef: string, amount: number, txHash: string, blockNumber: number, timestamp: number}>>}
  */
@@ -214,27 +235,56 @@ export async function getContributorPaidEvents() {
     return [];
   }
 
-  const abi      = await loadTreasuryAbi();
+  const abi = await loadTreasuryAbi();
+
+  // Always use the public Optimism JSON-RPC for log queries.
+  // MetaMask routes through Infura which caps eth_getLogs at ~2 000 blocks;
+  // our 9 000-block chunks would all fail silently (caught → []).
   const provider = new ethers.JsonRpcProvider(
     window.CONTRACTS?.rpcUrl || 'https://mainnet.optimism.io'
   );
+
   const treasury = new ethers.Contract(treasuryAddress, abi, provider);
   const filter   = treasury.filters.ContributorPaid();
 
-  // Paginate in RPC_BLOCK_CHUNK windows to stay under the public RPC block-range limit.
+  // Scan from whichever is later: the known deploy block OR 500 000 blocks
+  // before the current tip (~11 days on Optimism at 2-second blocks).
+  // This keeps chunk count small while tolerating an imprecise deploy block.
   const latestBlock = await provider.getBlockNumber();
-  const allLogs = [];
-  for (let from = TREASURY_DEPLOY_BLOCK; from <= latestBlock; from += RPC_BLOCK_CHUNK) {
-    const to = Math.min(from + RPC_BLOCK_CHUNK - 1, latestBlock);
-    try {
-      const chunk = await treasury.queryFilter(filter, from, to);
-      allLogs.push(...chunk);
-    } catch (chunkErr) {
-      console.warn(`[getContributorPaidEvents] chunk ${from}-${to} failed:`, chunkErr);
-    }
+  const startBlock  = Math.max(TREASURY_DEPLOY_BLOCK, latestBlock - 500_000);
+  const chunks = [];
+  for (let from = startBlock; from <= latestBlock; from += RPC_BLOCK_CHUNK) {
+    chunks.push([from, Math.min(from + RPC_BLOCK_CHUNK - 1, latestBlock)]);
   }
 
-  // Collect unique block numbers and batch-fetch block timestamps
+  // Fetch chunks in parallel batches to avoid hammering the RPC with too many
+  // concurrent requests while still being far faster than sequential iteration.
+  let failedChunks = 0;
+  const allLogs = [];
+  for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
+    const batch = chunks.slice(i, i + CHUNK_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(([from, to]) =>
+        treasury.queryFilter(filter, from, to).catch(err => {
+          failedChunks++;
+          console.warn(`[getContributorPaidEvents] chunk ${from}-${to} failed:`, err);
+          return [];
+        })
+      )
+    );
+    allLogs.push(...results.flat());
+  }
+
+  // If every single chunk failed, surface an error so the caller can show the
+  // Retry button instead of silently rendering "No settled payouts found on-chain."
+  if (chunks.length > 0 && failedChunks === chunks.length) {
+    throw new Error(
+      `All ${chunks.length} block-range queries failed. ` +
+      'Check that the RPC endpoint (mainnet.optimism.io) is reachable and try again.'
+    );
+  }
+
+  // Collect unique block numbers and batch-fetch timestamps in parallel.
   const blockNums = [...new Set(allLogs.map(l => l.blockNumber))];
   const blockTimestamps = new Map();
   await Promise.all(blockNums.map(async (bn) => {
@@ -248,7 +298,9 @@ export async function getContributorPaidEvents() {
 
   const events = allLogs.map((log) => ({
     contributor: log.args.contributor,
-    issueRef:    log.args.issueRef,
+    // Strip the compound-key wallet suffix (":0x…") before storing the display ref.
+    // The raw compound key is stored on-chain; we only need the human part for display.
+    issueRef:    (log.args.issueRef || '').replace(/:0x[0-9a-fA-F]+$/i, ''),
     amount:      Number(ethers.formatEther(log.args.amount)),
     txHash:      log.transactionHash,
     blockNumber: log.blockNumber,
@@ -262,11 +314,24 @@ export async function getContributorPaidEvents() {
 // ─── Exported: settlePayroll ──────────────────────────────────────────────────
 
 /**
- * Settle all pending payouts in a single `batchPayContributors()` call.
+ * Settle a batch of payouts in a single `batchPayContributors()` call.
  * The owner signs the transaction with MetaMask — no private key stored anywhere.
  *
+ * Each element in `payouts` maps to one entry in the batch:
+ *   - `contributor` — recipient wallet address
+ *   - `amount`      — BNUT to transfer (whole tokens, not wei)
+ *   - `issueRef`    — Unique key for this entry in the contract's `issuePaid` mapping.
+ *                     Use the compound format `"org/repo#N:0xlowerContributor"` for
+ *                     multi-contributor issues so each contributor gets an independent
+ *                     payment record and the batch never triggers a duplicate-key revert.
+ *
+ * The caller is responsible for:
+ *   1. Filtering out entries where `isIssuePaid(issueRef)` is already true.
+ *   2. Ensuring every `contributor` is a valid (non-zero) Optimism address.
+ *   3. Passing one entry per issue — the contract guards duplicates via `issuePaid`.
+ *
  * @param {Array<{contributor: string, amount: string, issueRef: string}>} payouts
- *   Subset of pending queue entries to settle (defaults to all pending).
+ *   Entries from the pending queue to include in the batch.
  * @returns {Promise<string>} Transaction hash of the batch settlement.
  */
 export async function settlePayroll(payouts) {
