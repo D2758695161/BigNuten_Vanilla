@@ -21,7 +21,7 @@
  * Prerequisites (loaded in index.html before this module):
  *   - ethers.js v6 (via CDN)
  *   - PayPal JS SDK  <script src="https://www.paypal.com/sdk/js?client-id=...">
- *   - Stripe.js      <script src="https://js.stripe.com/v3/">
+ *   - js/stripe-config.js (sets window.STRIPE_MONTHLY_PAYMENT_LINK, etc.)
  *   - js/contracts.js (sets window.SUBSCRIPTION_CONTRACT_ADDRESS to DecentEscrow,
  *                      and window.BIGNUTEN_ETH_PLAN_ID / BIGNUTEN_BNUT_PLAN_ID)
  *
@@ -30,13 +30,21 @@
  *     checkSubscriptionStatus,
  *     initPayPalSubscription,
  *     initStripeSubscription,
+ *     openStripePortal,
  *     payCryptoSubscription,
  *     payBNUTSubscription,
  *     initDnftPayPalPurchase,
+ *     initDnftStripePurchase,
  *   } from './subscription.js';
  */
 
 // ─── Contract ABIs (minimal — only the functions we call) ─────────────────────
+
+/**
+ * Sentinel string used in stripe-config.js placeholder values.
+ * Any URL containing this string is treated as "not yet configured".
+ */
+const STRIPE_PLACEHOLDER_SENTINEL = 'REPLACE_WITH';
 
 /**
  * Minimal ABI for the DecentEscrow contract — subscription functions only.
@@ -293,61 +301,70 @@ export function initPayPalSubscription(planId, containerId = "paypal-button-cont
 }
 
 /**
- * Initialises a Stripe.js payment flow for a subscription price.
- * Redirects to Stripe Checkout (hosted page) using a pre-created Price ID.
- * Requires the Stripe publishable key to be set in `window.STRIPE_PUBLISHABLE_KEY`.
+ * Opens a Stripe-hosted subscription checkout via a pre-created Payment Link.
+ *
+ * This is the **serverless** approach — no backend required.  It works on
+ * GitHub Pages, IPFS, or any static host.  The Payment Link URL is created
+ * once in the Stripe Dashboard and stored in js/stripe-config.js.
+ *
+ * The flow is identical to the PayPal buttons:
+ *   1. User clicks "Pay with Card"
+ *   2. Browser navigates to the Stripe Payment Link URL
+ *   3. User completes payment on Stripe's hosted page
+ *   4. Stripe redirects back to ?stripe=success (configured in the Dashboard)
+ *
+ * ── How to create a Payment Link ────────────────────────────────────────────
+ *   Stripe Dashboard → Payment Links → Create link
+ *   Set "After payment" → Custom redirect URL to:
+ *     https://YOURSITE/?stripe=success
+ *   Copy the https://buy.stripe.com/… URL into js/stripe-config.js.
  *
  * Related issue: #41 — Integrate Stripe Credit/Debit Card Subscriptions.
  *
- * @param {string} priceId - Stripe Price ID (e.g. "price_XXXXXXXXXX").
- * @param {string} successUrl - URL to redirect to on successful payment.
- * @param {string} cancelUrl  - URL to redirect to if the user cancels.
- * @returns {Promise<void>}
+ * @param {string} paymentLink - Stripe Payment Link URL (https://buy.stripe.com/…).
+ * @returns {void}
  *
  * @example
- *   await initStripeSubscription(
- *     'price_123',
- *     'https://bignuten.app/success',
- *     'https://bignuten.app/cancel'
- *   );
+ *   initStripeSubscription(window.STRIPE_MONTHLY_PAYMENT_LINK);
  */
-export async function initStripeSubscription(
-  priceId,
-  successUrl = window.location.origin + "?stripe=success",
-  cancelUrl = window.location.origin + "?stripe=cancel"
-) {
-  const stripeKey = window.STRIPE_PUBLISHABLE_KEY;
-  if (!stripeKey) {
+export function initStripeSubscription(paymentLink) {
+  if (!paymentLink || paymentLink.includes(STRIPE_PLACEHOLDER_SENTINEL)) {
     throw new Error(
-      "[subscription.js] window.STRIPE_PUBLISHABLE_KEY is not set. " +
-        "Add it to your page before calling initStripeSubscription()."
-    );
-  }
-  if (typeof Stripe === "undefined") {
-    throw new Error(
-      "[subscription.js] Stripe.js not loaded. " +
-        "Add <script src='https://js.stripe.com/v3/'> to index.html."
+      "[subscription.js] Stripe Payment Link is not configured. " +
+        "Open js/stripe-config.js and replace STRIPE_MONTHLY_PAYMENT_LINK / " +
+        "STRIPE_ANNUAL_PAYMENT_LINK with your Payment Link URLs from " +
+        "https://dashboard.stripe.com/test/payment-links — " +
+        "see docs/STRIPE_SETUP.md for step-by-step instructions."
     );
   }
 
-  const stripe = Stripe(stripeKey);
+  // Navigate to the Stripe-hosted checkout page.
+  // Stripe will redirect back to ?stripe=success on completion,
+  // or ?stripe=cancel if the user closes the checkout page.
+  window.location.href = paymentLink;
+}
 
-  // TODO (#41): Replace with a call to your backend to create a Checkout Session.
-  //             The backend should return the session ID.
-  //             Example: POST /api/create-checkout-session { priceId }
-  console.warn(
-    "[subscription.js] initStripeSubscription: You must implement a backend " +
-      "endpoint to create a Stripe Checkout Session. See Stripe docs: " +
-      "https://stripe.com/docs/billing/subscriptions/build-subscriptions"
-  );
-
-  // Placeholder redirect — replace `sessionId` with your backend response.
-  // const { sessionId } = await fetch('/api/create-checkout-session', {
-  //   method: 'POST',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ priceId, successUrl, cancelUrl }),
-  // }).then(r => r.json());
-  // await stripe.redirectToCheckout({ sessionId });
+/**
+ * Opens the Stripe Customer Portal so a subscriber can manage their
+ * subscription (update card, change plan, cancel).
+ *
+ * Uses the static portal link configured in js/stripe-config.js.
+ * The user is asked for their billing email and Stripe authenticates them.
+ *
+ * Related issue: #41 — Integrate Stripe Credit/Debit Card Subscriptions.
+ *
+ * @param {string} [returnUrl] - URL to return to after the portal session.
+ *                               Falls back to window.STRIPE_PORTAL_URL.
+ * @returns {void}
+ */
+export function openStripePortal(returnUrl) {
+  const portalUrl = returnUrl || window.STRIPE_PORTAL_URL;
+  if (!portalUrl || portalUrl.includes(STRIPE_PLACEHOLDER_SENTINEL)) {
+    // Fall back to Stripe's generic billing portal login page.
+    window.open('https://billing.stripe.com', '_blank', 'noopener,noreferrer');
+    return;
+  }
+  window.open(portalUrl, '_blank', 'noopener,noreferrer');
 }
 
 /**
@@ -423,6 +440,94 @@ export function initDnftPayPalPurchase(
           "admin will send your DNFT after verifying payment.";
       }
     }, 800);
+  });
+}
+
+/**
+ * Wires up the Stripe one-time DNFT purchase button.
+ *
+ * Flow:
+ *   1. User enters their wallet address in the shared input.
+ *   2. Button click validates the address.
+ *   3. Navigates to STRIPE_DNFT_PAYMENT_LINK with the wallet embedded as
+ *      `?client_reference_id=DNFT-wallet:<address>` so the admin can see it
+ *      in the Stripe Dashboard payment detail.
+ *
+ * @param {string} [btnId="dnft-stripe-btn"]            - The trigger button ID.
+ * @param {string} [walletInputId="dnft-stripe-wallet"] - Wallet address input ID.
+ * @param {string} [errElId="dnft-stripe-wallet-err"]   - Validation error element ID.
+ * @param {string} [confirmElId="dnft-stripe-confirm"]  - Confirmation message element ID.
+ * @returns {void}
+ *
+ * @example
+ *   initDnftStripePurchase(); // uses default IDs set in index.html
+ */
+export function initDnftStripePurchase(
+  btnId         = "dnft-stripe-btn",
+  walletInputId = "dnft-stripe-wallet",
+  errElId       = "dnft-stripe-wallet-err",
+  confirmElId   = "dnft-stripe-confirm"
+) {
+  const btn         = document.getElementById(btnId);
+  const walletInput = document.getElementById(walletInputId);
+  const errEl       = document.getElementById(errElId);
+  const confirmEl   = document.getElementById(confirmElId);
+
+  if (!btn || !walletInput) {
+    console.warn(
+      "[subscription.js] initDnftStripePurchase: button or wallet input not found."
+    );
+    return;
+  }
+
+  btn.addEventListener("click", function () {
+    const wallet    = walletInput.value.trim();
+    const isAddress = /^0x[0-9a-fA-F]{40}$/.test(wallet);
+    const isEns     = /^[^\s]+\.eth$/i.test(wallet);
+
+    if (!wallet) {
+      if (errEl) errEl.textContent = "⚠️ Please enter your wallet address before paying.";
+      walletInput.focus();
+      return;
+    }
+    if (!isAddress && !isEns) {
+      if (errEl) errEl.textContent =
+        "⚠️ Enter a valid 0x… address or ENS name (e.g. yourname.eth).";
+      walletInput.focus();
+      return;
+    }
+
+    if (errEl) errEl.textContent = "";
+
+    const paymentLink = window.STRIPE_DNFT_PAYMENT_LINK || '';
+    if (!paymentLink || paymentLink.includes(STRIPE_PLACEHOLDER_SENTINEL)) {
+      alert(
+        "Stripe DNFT checkout is not configured yet.\n\n" +
+        "Open js/stripe-config.js and set STRIPE_DNFT_PAYMENT_LINK to your " +
+        "$100 one-time Stripe Payment Link URL."
+      );
+      return;
+    }
+
+    // Append wallet as client_reference_id so it appears in the Stripe dashboard.
+    const separator = paymentLink.includes('?') ? '&' : '?';
+    const url = paymentLink + separator +
+      'client_reference_id=' + encodeURIComponent('DNFT-wallet:' + wallet);
+
+    // Show confirmation before navigating away.
+    if (confirmEl) {
+      const truncated =
+        wallet.length > 14
+          ? wallet.slice(0, 8) + "…" + wallet.slice(-6)
+          : wallet;
+      confirmEl.style.display = "block";
+      confirmEl.innerHTML =
+        "✅ Redirecting to Stripe checkout for $100…<br>" +
+        "Your wallet <code>" + truncated + "</code> was noted — " +
+        "admin will send your DNFT after verifying payment.";
+    }
+
+    setTimeout(function () { window.location.href = url; }, 400);
   });
 }
 

@@ -592,6 +592,8 @@
 
   <!-- Contract addresses & token metadata — must load before ES modules -->
   <script src="js/contracts.js"></script>
+  <!-- Stripe Payment Links & Customer Portal URL — must load before ES modules (Issue #41) -->
+  <script src="js/stripe-config.js"></script>
 
   <script type="module" src="js/app.js"></script>
   <script type="module">
@@ -1135,7 +1137,7 @@
             <input type="hidden" name="src" value="1" />
             <input type="hidden" name="no_note" value="1" />
             <button type="submit" class="about-pay-btn paypal-btn" title="Subscribe $10/month via PayPal">
-              <img src="https://www.paypalobjects.com/en_US/i/btn/btn_subscribeCC_LG.gif" alt="Subscribe via PayPal" style="height:32px;vertical-align:middle;" />
+              🅿 PayPal
             </button>
           </form>
 
@@ -1151,14 +1153,17 @@
             <input type="hidden" name="src" value="1" />
             <input type="hidden" name="no_note" value="1" />
             <button type="submit" class="about-pay-btn paypal-btn" title="Subscribe $99/year via PayPal">
-              <img src="https://www.paypalobjects.com/en_US/i/btn/btn_subscribeCC_LG.gif" alt="Subscribe via PayPal" style="height:32px;vertical-align:middle;" />
+              🅿 PayPal
             </button>
           </form>
 
-          <!-- Stripe (Coming Soon) -->
-          <button class="about-pay-btn stripe-btn" aria-disabled="true" title="Coming Soon — Credit/debit card payments via Stripe"
-                  onclick="alert('💳 Stripe card payments are coming soon! Check back after the next update.')">
-            💳 Pay with Card <span class="coming-soon-badge">Coming Soon</span>
+          <!-- Stripe — credit / debit card (Issue #41) -->
+          <button id="about-stripe-btn" class="about-pay-btn stripe-btn" title="Subscribe with credit or debit card via Stripe">
+            💳 Pay with Card
+            <span class="card-badges" aria-hidden="true">
+              <span class="card-badge card-badge-visa">VISA</span>
+              <span class="card-badge card-badge-mc">MC</span>
+            </span>
           </button>
 
           <!-- Crypto — opens subscription modal on the ETH tab (crypto-only view) -->
@@ -1167,13 +1172,6 @@
             🔗 Pay with Crypto
           </button>
 
-        </div>
-
-        <!-- ⚠️ Cancel is EASY to see and do (hidden for crypto subscribers) -->
-        <div class="cancel-subscription-row" id="about-cancel-paypal-row">
-          <a href="https://www.paypal.com/myaccount/autopay/" target="_blank" rel="noopener noreferrer" class="cancel-sub-link">
-            ❌ Cancel / Manage Your PayPal Subscription
-          </a>
         </div>
 
         <!-- BigNuten DNFT Early Supporter — matches DecentHead buy-section standard -->
@@ -1237,6 +1235,31 @@
               </form>
 
               <p id="dnft-paypal-confirm" class="dnft-paypal-confirm" style="display:none;"></p>
+            </div>
+
+            <!-- ── Stripe option ──────────────────────────────────────────── -->
+            <div class="dnft-buy-option-card dnft-stripe-option">
+              <div class="dnft-option-title">💳 Buy with Card (Stripe)</div>
+              <div class="dnft-option-price">$100 one-time payment</div>
+              <p class="dnft-option-desc">Pay with any credit or debit card — Visa, Mastercard, Amex. Admin will transfer your DNFT after verifying payment.</p>
+
+              <!-- Wallet address to receive the DNFT -->
+              <div class="dnft-wallet-input-row">
+                <label for="dnft-stripe-wallet" class="dnft-wallet-label dnft-stripe-wallet-label">Your wallet address (to receive the DNFT)</label>
+                <input id="dnft-stripe-wallet" type="text" class="dnft-wallet-input dnft-stripe-wallet-input"
+                       placeholder="0x… or ENS name" autocomplete="off" spellcheck="false" />
+                <p id="dnft-stripe-wallet-err" class="dnft-wallet-err" aria-live="polite"></p>
+              </div>
+
+              <button id="dnft-stripe-btn" class="dnft-buy-btn dnft-stripe-btn" title="Buy BigNuten DNFT — $100 via Stripe">
+                💳 Buy with Card — $100
+                <span class="card-badges" aria-hidden="true">
+                  <span class="card-badge card-badge-visa">VISA</span>
+                  <span class="card-badge card-badge-mc">MC</span>
+                </span>
+              </button>
+
+              <p id="dnft-stripe-confirm" class="dnft-stripe-confirm" style="display:none;"></p>
             </div>
 
           </div>

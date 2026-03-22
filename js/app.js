@@ -1,4 +1,4 @@
-import { initDnftPayPalPurchase, listDecentEscrowPlans, createDecentEscrowPlan, deactivateDecentEscrowPlan, getDecentEscrowSubscribers } from './subscription.js';
+import { initDnftPayPalPurchase, initDnftStripePurchase, listDecentEscrowPlans, createDecentEscrowPlan, deactivateDecentEscrowPlan, getDecentEscrowSubscribers } from './subscription.js';
 import { displayProposals, createProposal, isProposer, isAdmin, getBnutBalance, addProposer, removeProposer, mintBnutToAddress } from './governance.js';
 import { loadPayrollQueue, getTreasuryBalance, isTreasuryOwner, settlePayroll, isIssuePaid, getContributorPaidEvents } from './treasury.js';
 import { settleDataSharingRewards } from './dataSharing.js';
@@ -8,6 +8,8 @@ import { getUserTimezone, setUserTimezone, formatInUserTz, getTodayInUserTz, get
 document.addEventListener('DOMContentLoaded', () => {
   // Initialise DNFT PayPal one-time purchase form (wallet validation + PayPal submit)
   initDnftPayPalPurchase();
+  // Initialise DNFT Stripe one-time purchase button (wallet validation + redirect)
+  initDnftStripePurchase();
 
   const dietButton = document.getElementById('dietButton');
   const rawFoodModal = document.getElementById('rawFoodModal');
@@ -4913,6 +4915,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── helpers ──
 
+    /**
+     * Returns the Stripe Payment Link URL for the given plan,
+     * or an empty string if it is not yet configured.
+     * @param {'monthly'|'annual'} plan
+     * @returns {string}
+     */
+    function _getStripePaymentLink(plan) {
+      return plan === 'annual'
+        ? (window.STRIPE_ANNUAL_PAYMENT_LINK  || '')
+        : (window.STRIPE_MONTHLY_PAYMENT_LINK || '');
+    }
+
+    /** Returns true when a Stripe payment link hasn't been configured yet. */
+    function _stripeNotConfigured(url) {
+      return !url || url.includes('REPLACE_WITH');
+    }
+
     function openSubModal(method, cryptoOnly) {
       subModal.classList.remove('modal-hidden');
       document.body.classList.add('modal-active');
@@ -5135,20 +5154,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const stripeBtn    = document.getElementById('sub-stripe-btn');
     const stripeStatus = document.getElementById('sub-stripe-status');
     if (stripeBtn) {
-      stripeBtn.addEventListener('click', async () => {
-        stripeBtn.disabled = true;
-        if (stripeStatus) stripeStatus.textContent = '⏳ Redirecting to Stripe…';
-        try {
-          const { initStripeSubscription } = await import('./subscription.js');
-          const priceId = currentPlan === 'annual'
-            ? (window.STRIPE_ANNUAL_PRICE_ID  || 'price_annual_placeholder')
-            : (window.STRIPE_MONTHLY_PRICE_ID || 'price_monthly_placeholder');
-          await initStripeSubscription(priceId);
-        } catch (err) {
-          if (stripeStatus) stripeStatus.textContent = `❌ ${err.message || 'Stripe unavailable'}`;
-        } finally {
-          stripeBtn.disabled = false;
+      stripeBtn.addEventListener('click', () => {
+        const paymentLink = _getStripePaymentLink(currentPlan);
+
+        if (_stripeNotConfigured(paymentLink)) {
+          if (stripeStatus) {
+            stripeStatus.textContent =
+              '⚙️ Payment Link not configured — see js/stripe-config.js and docs/STRIPE_SETUP.md';
+          }
+          return;
         }
+
+        if (stripeStatus) stripeStatus.textContent = '⏳ Redirecting to Stripe…';
+        window.location.href = paymentLink;
       });
     }
 
@@ -5326,6 +5344,63 @@ document.addEventListener('DOMContentLoaded', () => {
       const savedPlan = urlParams.get('plan') === 'annual' ? 'annual' : 'monthly';
       _saveSubscriptionLocal('PayPal', savedPlan);
       history.replaceState({}, '', window.location.pathname);
+    }
+
+    // ── Handle Stripe return redirects ──────────────────────────────────────
+    // After a Stripe Payment Link checkout completes, Stripe redirects back to
+    // /?stripe=success (configured in the Payment Link's "After payment" settings).
+    // No session ID or backend call needed — just record optimistically.
+    if (urlParams.get('stripe') === 'success') {
+      history.replaceState({}, '', window.location.pathname);
+      _saveSubscriptionLocal('Stripe', 'monthly');
+      const toast = document.createElement('div');
+      toast.className = 'sub-toast sub-toast-success';
+      toast.textContent = '🎉 Card subscription active! Welcome to BigNuten Premium.';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 6000);
+    } else if (urlParams.get('stripe') === 'cancel') {
+      history.replaceState({}, '', window.location.pathname);
+      const toast = document.createElement('div');
+      toast.className = 'sub-toast sub-toast-info';
+      toast.textContent = '💳 Stripe checkout cancelled — your plan is unchanged.';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 5000);
+    }
+
+    // ── About page "Pay with Card" button ────────────────────────────────────
+    // Reads the currently selected plan from the About page plan-toggle and
+    // opens the corresponding Stripe Payment Link URL (no server required).
+    const aboutStripeBtn = document.getElementById('about-stripe-btn');
+    if (aboutStripeBtn) {
+      aboutStripeBtn.addEventListener('click', () => {
+        const activeAboutPlan = document.querySelector('#plan-toggle .plan-btn-active');
+        const plan = activeAboutPlan?.dataset?.plan === 'annual' ? 'annual' : 'monthly';
+        const paymentLink = _getStripePaymentLink(plan);
+
+        // Direct navigation — same pattern as PayPal forms.
+        if (_stripeNotConfigured(paymentLink)) {
+          alert(
+            '💳 Stripe Payment Link not yet configured.\n\n' +
+            'Open js/stripe-config.js and set STRIPE_MONTHLY_PAYMENT_LINK to your ' +
+            'Payment Link URL from https://dashboard.stripe.com/test/payment-links\n\n' +
+            'See docs/STRIPE_SETUP.md for step-by-step instructions.'
+          );
+          return;
+        }
+        window.location.href = paymentLink;
+      });
+    }
+
+    // ── Stripe Customer Portal link ───────────────────────────────────────────
+    // Opens the Stripe Customer Portal (configured in stripe-config.js).
+    // No backend needed — the portal URL is static and Stripe authenticates
+    // the subscriber by their billing email address.
+    const stripePortalLink = document.getElementById('sub-footer-stripe');
+    if (stripePortalLink) {
+      const portalUrl = window.STRIPE_PORTAL_URL;
+      if (!_stripeNotConfigured(portalUrl)) {
+        stripePortalLink.href = portalUrl;
+      }
     }
 
   }());

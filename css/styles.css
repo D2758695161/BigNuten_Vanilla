@@ -2012,7 +2012,9 @@ svg text {
 .about-pay-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4rem;
+  min-width: 10rem;
   padding: 0.45rem 1rem;
   border-radius: 8px;
   font-size: 0.9rem;
@@ -2022,12 +2024,9 @@ svg text {
   transition: box-shadow 0.2s, background 0.2s;
 }
 
-.paypal-btn {
-  background: transparent;
-  border: none;
-  padding: 0;
-}
-
+/* ── Unified payment button base: PayPal / Stripe / Crypto all share this ── */
+.paypal-btn,
+.stripe-btn,
 .crypto-btn {
   background: rgba(0, 229, 255, 0.1);
   border: 2px solid rgba(0, 229, 255, 0.6);
@@ -2036,27 +2035,49 @@ svg text {
   box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
 }
 
+.paypal-btn:hover,
+.stripe-btn:hover:not(:disabled),
 .crypto-btn:hover:not(:disabled):not([aria-disabled="true"]):not(.disabled) {
   background: rgba(0, 229, 255, 0.18);
   box-shadow: 0 0 18px rgba(0, 229, 255, 0.45);
 }
 
 .crypto-btn[aria-disabled="true"],
-.crypto-btn.disabled {
+.crypto-btn.disabled,
+.stripe-btn:disabled {
   cursor: default;
   opacity: 0.65;
 }
 
-/* ── Stripe button ─────────────────────────── */
-.stripe-btn {
-  background: rgba(99, 91, 255, 0.15);
-  border: 2px solid rgba(99, 91, 255, 0.5);
-  color: #a89fff;
+/* ── Card brand badges inside Stripe button ─ */
+.card-badges {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 0.3rem;
 }
 
-.stripe-btn[aria-disabled="true"] {
-  cursor: default;
-  opacity: 0.65;
+.card-badge {
+  display: inline-block;
+  font-size: 0.55rem;
+  font-weight: 900;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
+.card-badge-visa {
+  background: #1a1f71;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.card-badge-mc {
+  background: #eb001b;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
 /* ── DNFT button ───────────────────────────── */
@@ -2359,6 +2380,64 @@ svg text {
 .dnft-paypal-confirm code {
   font-family: monospace;
   color: #5bc6f7;
+}
+
+/* ── Stripe DNFT option card ──────────────────────────────────── */
+.dnft-stripe-option {
+  border-color: rgba(0, 229, 255, 0.33);
+  background: #001c1e;
+}
+
+.dnft-stripe-option .dnft-option-title {
+  color: #00e5ff;
+}
+
+.dnft-stripe-wallet-label {
+  color: #00e5ff;
+}
+
+.dnft-stripe-wallet-input {
+  background: #001828;
+  border-color: rgba(0, 229, 255, 0.4);
+  color: #e0f4ff;
+}
+
+.dnft-stripe-wallet-input:focus {
+  border-color: #00e5ff;
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.35);
+}
+
+.dnft-stripe-btn {
+  background: linear-gradient(135deg, rgba(0,229,255,0.25), rgba(0,229,255,0.1));
+  border: 2px solid rgba(0, 229, 255, 0.6);
+  color: #00e5ff;
+  text-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.2);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.dnft-stripe-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0,229,255,0.35), rgba(0,229,255,0.15));
+  box-shadow: 0 0 24px rgba(0, 229, 255, 0.45);
+  transform: translateY(-2px);
+}
+
+.dnft-stripe-confirm {
+  font-size: 0.76em;
+  color: #7effc0;
+  background: rgba(0, 255, 140, 0.07);
+  border: 1px solid rgba(0, 255, 140, 0.2);
+  border-radius: 8px;
+  padding: 0.5em 0.7em;
+  margin-top: 0.7em;
+  line-height: 1.5;
+}
+
+.dnft-stripe-confirm code {
+  font-family: monospace;
+  color: #00e5ff;
 }
 
 .dnft-escrow-note {
@@ -5128,4 +5207,41 @@ svg text {
   word-break: break-all;
   margin: 0.4rem 0 0;
   font-family: monospace;
+}
+
+/* ─── Stripe toast notifications (Issue #41) ──────────────────────────────── */
+
+.sub-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 0.85rem 1.5rem;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+  animation: sub-toast-in 0.3s ease;
+  pointer-events: none;
+  max-width: min(90vw, 480px);
+}
+
+.sub-toast-success {
+  background: rgba(0, 220, 120, 0.18);
+  border: 1.5px solid rgba(0, 220, 120, 0.5);
+  color: #00dc78;
+  box-shadow: 0 4px 24px rgba(0, 220, 120, 0.15);
+}
+
+.sub-toast-info {
+  background: rgba(99, 91, 255, 0.18);
+  border: 1.5px solid rgba(99, 91, 255, 0.5);
+  color: #a89fff;
+  box-shadow: 0 4px 24px rgba(99, 91, 255, 0.15);
+}
+
+@keyframes sub-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0);    }
 }
