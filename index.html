@@ -18,12 +18,12 @@
   
   <header>
     <div id="header-left">
-      <div id="ipfs-status">
+      <div id="ipfs-status" style="display:block;" title="IPFS Storage — click to manage your data options">
         <div class="ticker-wrapper">
           <div class="ticker-circle-ipfs" id="ticker-circle"></div>
         </div>
         <div id="ipfsIconWrapper">
-          <img id="ipfsIcon" src="img/IPFS_Logo.png" alt="IPFS Connected" />
+          <img id="ipfsIcon" src="img/IPFS_Logo.png" alt="IPFS Storage" data-storage-mode="json-only" />
           <div id="ipfsHoverPopup" class="hover-popup"></div>
         </div>
       </div>
@@ -74,6 +74,7 @@
         <button class="aes-menu-item" id="aes-achieve-btn"   role="menuitem">🏆 Achievements</button>
         <button class="aes-menu-item" id="aes-gov-btn"       role="menuitem">🗳️ Governance</button>
         <button class="aes-menu-item" id="aes-data-btn"      role="menuitem">📊 Data Sharing</button>
+        <button class="aes-menu-item" id="aes-storage-btn" role="menuitem">💾 Data &amp; Storage</button>
         <button class="aes-menu-item" id="aes-challenge-btn" role="menuitem">🏋️ Monthly Challenge</button>
         <button class="aes-menu-item" id="aes-bounty-register-btn" role="menuitem">💰 Bounty Register</button>
       </div>
@@ -1103,6 +1104,30 @@
         <p>BigNuten helps you track the combined effects of regular exercise, vitamins, and supplements on your body over time. Log workouts, weight, nutrition, and emotions — all in one place, stored locally and optionally on IPFS for decentralized persistence.</p>
       </section>
 
+      <!-- ── Data Control Section ──────────────────────────────────── -->
+      <section class="about-section dc-about-section">
+        <h3>🔑 Your Data &amp; IPFS Storage</h3>
+
+        <p class="about-payment-desc">
+          Your data lives in your browser. Connect your own Storacha space to enable automatic IPFS backup — or export a JSON file anytime.
+          <strong>Data is not encrypted</strong> — only share what you're comfortable with.
+          <a href="https://colab.research.google.com/drive/1PtsnLahwgP-uBz-IdESUfXBp8uwB6wcM?usp=sharing" target="_blank" rel="noopener noreferrer" class="dc-notice-link">📚 Learn about IPFS →</a>
+        </p>
+
+        <div class="dc-about-actions">
+          <button id="about-ipfs-connect-btn" class="dc-about-open-btn" type="button">
+            🔗 Connect Storacha Account
+          </button>
+          <button id="about-json-download-btn" class="dc-about-json-btn" type="button">
+            ⬇️ Download JSON Backup
+          </button>
+        </div>
+        <div class="dc-about-mode-row">
+          Storage: <span id="dc-about-mode-badge" class="dc-mode-badge" data-mode="json-only">📁 JSON File (local)</span>
+        </div>
+        <p id="about-json-status" class="dc-status" aria-live="polite" style="margin-top:0.3rem;font-size:0.8rem;"></p>
+      </section>
+
       <!-- ── Subscription / Support Section ─────────────────────────── -->
       <section class="about-section subscribe-section">
         <h3>🌟 Support &amp; Subscribe</h3>
@@ -1342,6 +1367,126 @@
       </footer>
     </div>
   </div>
+
+  <!-- ── IPFS Educational Overlay (first-visit) ───────────────────────────── -->
+  <div id="ipfs-edu-overlay" class="edu-overlay edu-hidden" role="dialog" aria-modal="true" aria-labelledby="edu-overlay-title">
+    <div class="edu-overlay-card">
+      <h2 id="edu-overlay-title" class="edu-title">🔑 Your data. Your keys. No exceptions.</h2>
+
+      <p class="edu-body">
+        Most health apps store your data on their servers. BigNuten doesn't.
+        Your weight logs, workouts, and supplements live in your browser — or in your own personal IPFS space that <strong>only you control</strong>.
+        Nobody can sell it, lose it, or lock you out of it. Not even us.
+      </p>
+      <p class="edu-body">
+        To enable automatic cloud backup, you'll need a free <strong>Storacha</strong> account.
+        Storacha gives you a globally unique Space DID — your own cryptographic key to your data, forever.
+        <a href="https://colab.research.google.com/drive/1PtsnLahwgP-uBz-IdESUfXBp8uwB6wcM?usp=sharing" target="_blank" rel="noopener noreferrer" class="edu-link">📚 Learn about IPFS &amp; Storacha →</a>
+      </p>
+
+      <div class="edu-steps">
+        <div class="edu-step">
+          <span class="edu-step-num">1</span>
+          <div>
+            <strong>Sign up at Storacha</strong> (free) —
+            <a href="https://storacha.network" target="_blank" rel="noopener noreferrer" class="edu-link">open storacha.network ↗</a>
+          </div>
+        </div>
+        <div class="edu-step">
+          <span class="edu-step-num">2</span>
+          <div><strong>Confirm your email</strong> in the desktop browser where BigNuten is open</div>
+        </div>
+        <div class="edu-step">
+          <span class="edu-step-num">3</span>
+          <div>Click <strong>"Connect my Storacha account"</strong> below</div>
+        </div>
+      </div>
+
+      <!-- Mobile notice - shown only on small screens / touch devices -->
+      <div id="ipfs-edu-mobile-notice" class="edu-mobile-notice" hidden>
+        📱 <strong>Mobile users:</strong> IPFS backup requires a desktop browser for the initial connection — this is a limitation of Storacha's email confirmation flow.
+        Your data is safe in your browser and can always be exported as a JSON file.
+        Come back on desktop to enable cloud sync.
+      </div>
+
+      <div class="edu-actions">
+        <button id="ipfs-edu-connect-btn" class="edu-connect-btn" type="button">
+          🔗 Connect my Storacha account
+        </button>
+        <p id="ipfs-edu-connect-status" class="dc-status" aria-live="polite" style="display:none;"></p>
+        <button id="ipfs-edu-skip-btn" class="edu-skip-btn" type="button">
+          → Skip for now, I'll use JSON export
+        </button>
+      </div>
+    </div>
+  </div>
+  <!-- ── End IPFS Educational Overlay ─────────────────────────────────────── -->
+
+  <!-- ── Condensed IPFS Connect Dialog (returning users who haven't connected) ── -->
+  <div id="ipfs-connect-dialog" class="modal-overlay modal-hidden" role="dialog" aria-modal="true" aria-labelledby="ipfs-dialog-title">
+    <div class="modal dc-modal">
+      <button class="modal-close" id="ipfs-dialog-close-btn" aria-label="Close">×</button>
+      <h3 id="ipfs-dialog-title" style="color:#00e5ff;margin-top:0;">🔗 Connect Your Storacha Space</h3>
+      <p style="color:#8ab0c4;font-size:0.85rem;">
+        Connect your own Storacha/web3.storage space to enable automatic IPFS snapshots.
+        Your data lives in <em>your</em> space — BigNuten cannot access it.
+        <a href="https://storacha.network" target="_blank" rel="noopener noreferrer" class="dc-notice-link">Sign up free →</a>
+      </p>
+      <button id="ipfs-dialog-connect-btn" class="dc-action-btn dc-btn-w3s" type="button" style="width:100%;margin-bottom:0.6rem;">
+        🔗 Connect my Storacha account
+      </button>
+      <p id="ipfs-dialog-status" class="dc-status" aria-live="polite" style="display:none;"></p>
+      <div style="margin-top:0.75rem;border-top:1px solid rgba(0,229,255,0.1);padding-top:0.75rem;">
+        <div class="dc-json-utility-title">📁 JSON Backup — No Account Needed</div>
+        <div class="dc-btn-row" style="margin-top:0.45rem;">
+          <button id="dialog-json-export-btn" class="dc-action-btn dc-btn-primary" type="button">⬇️ Download JSON</button>
+          <button id="dialog-json-import-btn" class="dc-action-btn dc-btn-secondary" type="button">📂 Import JSON</button>
+          <input id="dialog-json-import-file" type="file" accept=".json,application/json" style="display:none;" />
+        </div>
+        <p id="dialog-json-status" class="dc-status" aria-live="polite"></p>
+      </div>
+    </div>
+  </div>
+  <!-- ── End Condensed Connect Dialog ─────────────────────────────────────── -->
+
+  <!-- ── Snapshot Panel (anchored below IPFS icon) ────────────────────────── -->
+  <div id="ipfs-snapshot-panel" class="snapshot-panel" hidden>
+    <button class="snapshot-panel-close" id="snapshot-panel-close" aria-label="Close snapshot panel">×</button>
+    <div class="sp-header">📋 IPFS Snapshots</div>
+
+    <p id="snapshot-panel-status" class="sp-status" aria-live="polite"></p>
+
+    <!-- Mobile notice -->
+    <div id="snapshot-panel-mobile-msg" class="sp-mobile-msg" hidden>
+      📱 <strong>IPFS sync requires desktop</strong> for the initial Storacha connection.
+      You can still import a past snapshot by CID below, or export/import a JSON backup.
+    </div>
+
+    <!-- Snapshot history -->
+    <div class="sp-section-title">🕘 Recent snapshots (last 7)</div>
+    <div id="snapshot-history-list" class="sp-history-list"></div>
+
+    <!-- Import from CID -->
+    <div id="snapshot-cid-section" class="sp-section">
+      <div class="sp-section-title">📥 Import from IPFS CID</div>
+      <div class="sp-cid-row">
+        <input id="snapshot-cid-input" class="sp-cid-input" type="text" placeholder="bafyrei…" aria-label="IPFS CID to import" />
+        <button id="snapshot-cid-import-btn" class="sp-btn sp-btn-cid" type="button">📥 Fetch &amp; Merge</button>
+      </div>
+    </div>
+
+    <!-- Import from JSON / Export JSON -->
+    <div class="sp-section">
+      <div class="sp-section-title">📁 JSON Backup</div>
+      <div class="sp-btn-row">
+        <button id="snapshot-json-export-btn" class="sp-btn sp-btn-export" type="button">⬇️ Download JSON</button>
+        <button id="snapshot-json-import-btn" class="sp-btn sp-btn-import" type="button">📂 Import JSON</button>
+        <input id="snapshot-json-import-file" type="file" accept=".json,application/json" style="display:none;" />
+      </div>
+    </div>
+  </div>
+  <!-- ── End Snapshot Panel ────────────────────────────────────────────────── -->
+
   <script>
   // ── Dashboard Panel Toggle Logic ───────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {

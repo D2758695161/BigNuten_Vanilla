@@ -3,6 +3,7 @@ import { displayProposals, createProposal, isProposer, isAdmin, getBnutBalance, 
 import { loadPayrollQueue, getTreasuryBalance, isTreasuryOwner, settlePayroll, isIssuePaid, getContributorPaidEvents } from './treasury.js';
 import { settleDataSharingRewards } from './dataSharing.js';
 import { getUserTimezone, setUserTimezone, formatInUserTz, getTodayInUserTz, getCurrentTimeInUserTz, getGroupedTimezones } from './timezone.js';
+import { initDataControl, getStorageMode, setStorageMode, exportDataAsJSON, importDataFromJSONFile, STORAGE_MODE_LABELS } from './dataControl.js';
 
 // --- Raw Food Modal Logic ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -3006,10 +3007,12 @@ if (measurementForm) {
            const tickerCircle = document.getElementById('ticker-circle');
            tickerCircle.innerHTML = '';
 
+           const currentMode = getStorageMode();
            [...prefix].forEach(char => {
              const span = document.createElement('span');
              span.classList.add('ticker-letter');
              span.textContent = char;
+             span.dataset.storageMode = currentMode;
              tickerCircle.appendChild(span);
            });
            for (let i = 0; i < 4; i++) {
@@ -3018,12 +3021,14 @@ if (measurementForm) {
              img.src = 'img/IPFS_Logo.png';
              img.style.width = '12px';
              img.style.height = '12px';
+             img.dataset.storageMode = currentMode;
              tickerCircle.appendChild(img);
            }
            [...suffix].forEach(char => {
              const span = document.createElement('span');
              span.classList.add('ticker-letter');
              span.textContent = char;
+             span.dataset.storageMode = currentMode;
              tickerCircle.appendChild(span);
            });
 
@@ -3031,16 +3036,19 @@ if (measurementForm) {
            const star1 = document.createElement('span');
            star1.classList.add('ticker-letter');
            star1.textContent = '*';
+           star1.dataset.storageMode = currentMode;
            tickerCircle.appendChild(star1);
 
            const shakti = document.createElement('span');
            shakti.classList.add('ticker-letter');
            shakti.textContent = '⚸';
+           shakti.dataset.storageMode = currentMode;
            tickerCircle.appendChild(shakti);
 
            const star2 = document.createElement('span');
            star2.classList.add('ticker-letter');
            star2.textContent = '*';
+           star2.dataset.storageMode = currentMode;
            tickerCircle.appendChild(star2);
 
            // Position letters (recentered snake on IPFS icon with logo-aligned origin)
@@ -3075,26 +3083,24 @@ if (measurementForm) {
            }
            animateTicker();
           
-           // Add IPFS upload click listener after icon is shown
+           // After w3up connects: update mode to own-w3s, store client ref for uploads
            const ipfsIcon = document.getElementById("ipfsIcon");
-           if (ipfsIcon && !ipfsIcon._ipfsListenerAdded) {
-             ipfsIcon.addEventListener("click", async () => {
-               const data = getFitnessData();
-               const cid = await uploadDataToIPFS(data, result.client);
-               if (cid) {
-                 alert(`Snapshot uploaded to IPFS.\nCID:\n${cid}`);
-                 console.log("Uploaded CID:", cid);
-               } else {
-                 alert("Upload failed.");
-               }
-             });
-             ipfsIcon._ipfsListenerAdded = true;
+           if (ipfsIcon) {
+             // Update the icon to reflect connected state
+             ipfsIcon.dataset.storageMode = 'own-w3s';
+             const statusRingEl = document.getElementById('ipfs-status');
+             if (statusRingEl) statusRingEl.dataset.storageMode = 'own-w3s';
            }
+           // Store client reference so icon click can trigger manual upload
+           window._w3upClientRef = result.client;
+           // Mark education seen and update mode
+           localStorage.setItem('ipfsEducationSeen', '1');
+           if (typeof setStorageMode === 'function') setStorageMode('own-w3s');
 
            // --- Snapshot catch-up logic: check if we missed today's snapshot
            if (result?.client) {
-             // Check if we missed today's snapshot
-             if (shouldTakeSnapshotToday()) {
+             // Skip IPFS upload if user explicitly chose JSON-only mode
+             if (getStorageMode() !== 'json-only' && shouldTakeSnapshotToday()) {
                const data = getFitnessData();
                const cid = await uploadDataToIPFS(data, result.client);
                if (cid) {
@@ -3118,15 +3124,18 @@ if (measurementForm) {
              const timeUntilMidnight = nextMidnight - now;
 
              setTimeout(() => {
-               const data = getFitnessData();
-               uploadDataToIPFS(data, client).then(cid => {
-                 if (cid) {
-                   console.log("🕛 Midnight snapshot uploaded:", cid);
-                   markSnapshotTakenToday();
-                 } else {
-                   console.warn("❌ Midnight snapshot failed.");
-                 }
-               });
+               // Skip IPFS upload if user explicitly chose JSON-only mode
+               if (getStorageMode() !== 'json-only') {
+                 const data = getFitnessData();
+                 uploadDataToIPFS(data, client).then(cid => {
+                   if (cid) {
+                     console.log("🕛 Midnight snapshot uploaded:", cid);
+                     markSnapshotTakenToday();
+                   } else {
+                     console.warn("❌ Midnight snapshot failed.");
+                   }
+                 });
+               }
 
                // Reschedule for next day
                scheduleMidnightSnapshot(client);
@@ -4088,6 +4097,21 @@ document.addEventListener('DOMContentLoaded', () => {
     return m.includes('eth') || m.includes('bnut') || m.includes('usdc');
   }
 
+  /** Refreshes the data-mode badge in the about modal (dc-about-mode-badge). */
+  function _refreshDataModeBadge() {
+    const mode = getStorageMode();
+    const text = STORAGE_MODE_LABELS[mode] || mode;
+    const badge = document.getElementById('dc-about-mode-badge');
+    if (badge) {
+      badge.textContent  = text;
+      badge.dataset.mode = mode;
+    }
+    // Keep the IPFS icon glow in sync
+    const ipfsIconEl = document.getElementById('ipfsIcon');
+    if (ipfsIconEl) ipfsIconEl.dataset.storageMode = mode;
+    const statusRing = document.getElementById('ipfs-status');
+    if (statusRing) statusRing.dataset.storageMode = mode;
+  }
   // ── About modal helpers ───────────────────────────────────────────────────
 
   function openAboutModal(scrollToDnft) {
@@ -4098,6 +4122,8 @@ document.addEventListener('DOMContentLoaded', () => {
     _loadBigNutenListings();
     // Initialize/refresh the timezone widget each time the modal opens
     initTimezoneWidget();
+    // Refresh the data-storage mode badge in the about section
+    _refreshDataModeBadge();
 
     // Show/hide PayPal cancel link based on subscription method
     const aboutCancelRow = document.getElementById('about-cancel-paypal-row');
@@ -4421,6 +4447,26 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
       });
+    }
+  });
+
+  // ── Data & Storage button (aes-storage-btn) ──────────────────────────────
+  document.getElementById('aes-storage-btn')?.addEventListener('click', () => {
+    closeAesDropdown();
+    // Open educational overlay on first visit, condensed dialog otherwise
+    const educSeen = localStorage.getItem('ipfsEducationSeen');
+    const mode     = getStorageMode();
+    if (!educSeen) {
+      import('./dataControl.js').then(m => m._openOverlay());
+    } else if (mode !== 'own-w3s') {
+      const dialog = document.getElementById('ipfs-connect-dialog');
+      if (dialog) {
+        dialog.classList.remove('modal-hidden');
+        document.body.classList.add('modal-active');
+      }
+    } else {
+      // Already connected — open snapshot panel
+      import('./dataControl.js').then(m => m._openSnapshotPanel());
     }
   });
 
@@ -6539,6 +6585,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Community Data Dashboard ──────────────────────────────────────────────
   initCommunityDashboard();
+
+  // ── Data Control (educational overlay + snapshot panel) ──────────────────
+  initDataControl({ connectW3upClient, tryAutoRestoreW3upClient, uploadDataToIPFS });
+
+  // ── Apply initial IPFS glow state ─────────────────────────────────────────
+  {
+    const initMode = getStorageMode();
+    const ipfsIconEl = document.getElementById('ipfsIcon');
+    if (ipfsIconEl) ipfsIconEl.dataset.storageMode = initMode;
+    const statusRing = document.getElementById('ipfs-status');
+    if (statusRing) statusRing.dataset.storageMode = initMode;
+
+    // Wire About-modal "Connect Storacha" button
+    document.getElementById('about-ipfs-connect-btn')?.addEventListener('click', async () => {
+      const { _openOverlay } = await import('./dataControl.js');
+      _openOverlay();
+    });
+
+    // Wire condensed dialog JSON buttons
+    document.getElementById('dialog-json-export-btn')?.addEventListener('click', () => {
+      try { exportDataAsJSON(); }
+      catch (err) { console.error('JSON export failed:', err); }
+    });
+    const dialogImportFile = document.getElementById('dialog-json-import-file');
+    document.getElementById('dialog-json-import-btn')?.addEventListener('click', () => {
+      dialogImportFile?.click();
+    });
+    dialogImportFile?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const merged = await importDataFromJSONFile(file);
+        const count  = Object.values(merged).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+        const statusEl = document.getElementById('dialog-json-status');
+        if (statusEl) { statusEl.textContent = `✅ Imported — ${count} entries.`; statusEl.style.color = '#00dc90'; }
+      } catch (err) {
+        const statusEl = document.getElementById('dialog-json-status');
+        if (statusEl) { statusEl.textContent = `❌ ${err.message}`; statusEl.style.color = '#ff6b6b'; }
+      }
+      if (dialogImportFile) dialogImportFile.value = '';
+    });
+  }
 
   // ── Raw Intake DV Card ────────────────────────────────────────────────────
   initRawIntakeDVCard();
