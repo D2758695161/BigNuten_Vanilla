@@ -5842,13 +5842,23 @@ document.addEventListener('DOMContentLoaded', () => {
      * Unique per-entry key for the on-chain issuePaid mapping.
      * Appending the contributor address ensures multiple contributors on the
      * same issue each get an independent contract-level payment record.
-     * @param {object} p  Queue entry with issueRef and contributor fields.
+     * When an entry carries a `role` (e.g. "implementer" / "idea-originator"),
+     * the role is also appended so that a contributor who both implemented the
+     * solution AND originated the idea gets two independent payment slots:
+     *   "issueRef:wallet:implementer"   — their 80% implementation share
+     *   "issueRef:wallet:idea-originator" — their 20% idea-credit share
+     * Legacy entries without a role field keep the shorter "issueRef:wallet" format.
+     * @param {object} p  Queue entry with issueRef, contributor, and optional role fields.
      * @returns {string}
      */
     function entryKey(p) {
-      return p.contributor && p.contributor !== '0x0000000000000000000000000000000000000000'
-        ? `${p.issueRef}:${p.contributor.toLowerCase()}`
-        : p.issueRef;
+      if (!p.contributor || p.contributor === '0x0000000000000000000000000000000000000000') {
+        return p.issueRef;
+      }
+      const addr = p.contributor.toLowerCase();
+      return p.role
+        ? `${p.issueRef}:${addr}:${p.role}`
+        : `${p.issueRef}:${addr}`;
     }
 
     // ── Render batch preview: per-wallet tally with issue breakdown ───────
@@ -6089,14 +6099,15 @@ document.addEventListener('DOMContentLoaded', () => {
           const p    = _pendingQueue[idx];
           if (!p) return;
 
-          const amount = Math.max(1, parseInt(p.amount || '1', 10));
+          // parseFloat returns NaN for missing/invalid amounts; NaN > 0 is false, so we fall back to 1.
+          const amount = parseFloat(p.amount) > 0 ? parseFloat(p.amount) : 1;
           const msgEl  = document.getElementById(`payroll-row-msg-${idx}`);
 
           btn.disabled = true;
           if (msgEl) msgEl.textContent = '⏳ Sending…';
 
           try {
-            const txHash = await settlePayroll([{ contributor: p.contributor, amount: String(amount), issueRef: p.issueRef }]);
+            const txHash = await settlePayroll([{ contributor: p.contributor, amount: String(amount), issueRef: entryKey(p) }]);
             markRowSettled(idx, txHash);
           } catch (err) {
             if (msgEl) msgEl.textContent = _friendlyTxError(err);
@@ -6419,7 +6430,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // multiple contributors on the same issue each get an independent
         // issuePaid record, preventing cross-contributor revert.
         const payouts = toSettle.map(({ p }) => {
-          const amount = Math.max(1, parseInt(p.amount || '1', 10));
+          const amount = parseFloat(p.amount) > 0 ? parseFloat(p.amount) : 1;
           return { contributor: p.contributor, amount: String(amount), issueRef: entryKey(p) };
         });
 
